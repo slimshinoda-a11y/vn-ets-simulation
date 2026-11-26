@@ -7,7 +7,5 @@ services:
     buildCommand: npm run build
     startCommand: npm start
     envVars:
-      - key: NODE_ENV
-        value: production
       - key: ADMIN_KEY
         value: admin123
