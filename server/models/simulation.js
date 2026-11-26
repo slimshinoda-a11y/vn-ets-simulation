@@ -2016,8 +2016,8 @@ class Simulation {
     this.log('POLICY', `Advanced to Compliance Period ${this.currentPeriod} (${this.getPeriodYears(this.currentPeriod)}). Adjusted Cap: ${this.parameters.totalCap.toLocaleString()} tCO2e (Correction Factor: ${this.parameters.correctionFactor >= 0 ? '+' : ''}${this.parameters.correctionFactor}%)`);
   }
 
-  // Simulation Bot / AI Market Maker activity tick targeting ~95% compliance rate
-  // Supports dynamic price trends (BULLISH/BEARISH/NEUTRAL) and late-period scarcity squeeze simulation
+  // Simulation Bot / AI Market Maker activity tick targeting ~botComplianceTarget% compliance rate
+  // Ensures diverse compliance pathways (abatement, offsets, allowances, hybrid) and guaranteed active market trades
   tickBots() {
     if (!this.parameters.botsEnabled || this.phase !== 'TRADING') return;
 
@@ -2031,135 +2031,101 @@ class Simulation {
     const currentPrice = this.allowanceBook.lastPrice || 5.00;
     const priceFloor = this.parameters.marketPriceFloor || 1.50;
     const priceCeiling = this.parameters.marketPriceCeiling || 15.00;
-    const penaltyRate = this.parameters.penaltyRate || 12.00;
 
-    // --- Price Trend & Late-Period Scarcity Dynamics ---
-    const totalDuration = this.periodDuration > 0 ? this.periodDuration : 600;
-    const timeElapsedRatio = Math.max(0, Math.min(1, 1 - (this.timeRemaining / totalDuration)));
-    const isLatePeriod = Boolean(this.parameters.botEndPeriodScarcity && timeElapsedRatio > 0.40);
-    const lateUrgency = isLatePeriod ? Math.pow((timeElapsedRatio - 0.40) / 0.60, 1.6) : 0;
-
-    const trend = this.parameters.botPriceTrend || 'NEUTRAL';
-    const intensity = (this.parameters.botPriceIntensity != null ? Number(this.parameters.botPriceIntensity) : 50) / 50;
-
-    let baseBias = 0;
-    if (trend === 'BULLISH') baseBias = 0.30 * intensity;
-    else if (trend === 'BEARISH') baseBias = -0.30 * intensity;
-
-    const scarcityPush = (this.parameters.botEndPeriodScarcity ? lateUrgency * 0.50 : 0) * intensity;
-    const netPriceMultiplier = Math.max(0.35, 1.0 + baseBias + scarcityPush);
-
-    // Broadcast warning log once when late scarcity kicks in
-    if (this.parameters.botEndPeriodScarcity && lateUrgency > 0.45 && !this._loggedScarcity) {
-      this._loggedScarcity = true;
-      this.log('MARKET', '⚠️ Áp lực khan hiếm cuối kỳ tuân thủ: Các cơ sở thiếu hụt chạy đua gom vét hạn ngạch trước giờ G, giá chào bán bị đẩy tăng vọt tiệm cận mức phạt.', {
-        timeRemaining: this.timeRemaining,
-        currentPrice,
-        multiplier: netPriceMultiplier.toFixed(2)
+    // 1. Maintain robust Sell liquidity on the Allowance Order Book (~$4.95 - $5.15)
+    if (this.allowanceBook.asks.length < 4) {
+      const surplusBots = botFacilities.filter(f => f.allowances > f.actualEmissions);
+      const askPrices = [
+        Math.round((currentPrice * (0.995 + Math.random() * 0.01)) * 100) / 100,
+        Math.round((currentPrice * (1.005 + Math.random() * 0.015)) * 100) / 100,
+        Math.round((currentPrice * (1.02 + Math.random() * 0.02)) * 100) / 100,
+        Math.round((currentPrice * (1.035 + Math.random() * 0.025)) * 100) / 100
+      ];
+      askPrices.forEach((askP, idx) => {
+        const clampedP = Math.min(priceCeiling, Math.max(priceFloor, askP));
+        const seller = (surplusBots.length > idx && surplusBots[idx].allowances > 10000)
+          ? surplusBots[idx]
+          : { id: `VN_MARKET_MAKER_SURPLUS_${idx + 1}`, name: 'Nhà máy Thặng dư Hạn ngạch (Market Maker)' };
+        const qty = 15000 + idx * 10000;
+        try {
+          this.allowanceBook.addOrder({
+            facilityId: seller.id,
+            facilityName: seller.name,
+            side: 'SELL',
+            type: 'LIMIT',
+            price: clampedP,
+            quantity: qty
+          });
+        } catch (e) {}
       });
     }
 
-    // 1. Surplus Bots / Market Makers: Supply surplus allowances to the market order book
-    const surplusBots = botFacilities.filter(f => f.allowances > f.actualEmissions);
-    for (const sBot of surplusBots) {
-      const surplus = sBot.allowances - sBot.actualEmissions;
-      const sellChance = Math.max(0.08, 0.25 * (1 - (this.parameters.botEndPeriodScarcity ? lateUrgency * 0.45 : 0)));
-      if (surplus > 1000 && Math.random() < sellChance) {
-        const lotFactor = (trend === 'BULLISH' || (this.parameters.botEndPeriodScarcity && lateUrgency > 0.3)) ? 0.6 : (trend === 'BEARISH' ? 1.4 : 1.0);
-        const sellQty = Math.max(500, Math.min(surplus - 500, Math.floor((Math.random() * 5000 + 1500) * lotFactor)));
-
-        let askPrice = currentPrice * (0.99 + Math.random() * 0.04) * netPriceMultiplier;
-        if (scarcityPush > 0.10) {
-          const scarcityTarget = currentPrice + (penaltyRate - currentPrice) * (0.25 + 0.45 * lateUrgency);
-          askPrice = Math.max(askPrice, scarcityTarget * (0.96 + Math.random() * 0.08));
-        }
-        askPrice = Math.round(Math.min(priceCeiling, Math.max(priceFloor, askPrice)) * 100) / 100;
-
+    // 2. Maintain robust Ask liquidity on the Offset Market Registry (~$2.80 - $3.40)
+    if (this.offsetBook.asks.length < 3) {
+      const offsetPrices = [2.80, 3.00, 3.20];
+      offsetPrices.forEach((price, idx) => {
         try {
-          this.placeOrder({
-            facilityId: sBot.id,
+          this.offsetBook.addOrder({
+            facilityId: 'SYSTEM_VN_OFFSET_REGISTRY',
+            facilityName: 'Vietnam Carbon Credit Registry (VCM / Article 6)',
             side: 'SELL',
-            instrument: 'ALLOWANCE',
             type: 'LIMIT',
-            price: askPrice,
-            quantity: sellQty
+            price: price,
+            quantity: 35000 + idx * 20000
           });
         } catch (e) {}
-      }
+      });
     }
 
-    // 2. Ensure adequate Ask liquidity on the Offset Market Registry with price sensitivity
-    if (this.offsetBook.asks.length < 3) {
-      try {
-        const offsetMultiplier = Math.max(0.70, Math.min(1.50, (netPriceMultiplier + 1.0) / 2));
-        const offsetPrice = Math.round(Math.min(priceCeiling, Math.max(1.0, this.offsetBook.lastPrice * (0.98 + Math.random() * 0.04) * offsetMultiplier)) * 100) / 100;
-        this.offsetBook.addOrder({
-          facilityId: 'SYSTEM_VN_OFFSET_REGISTRY',
-          facilityName: 'Vietnam Carbon Credit Registry (VCM / Article 6)',
-          side: 'SELL',
-          type: 'LIMIT',
-          price: offsetPrice,
-          quantity: 30000
-        });
-      } catch (e) {}
-    }
-
-    // 3. Monitor current compliance across all facilities
+    // 3. Monitor current real compliance across all facilities
+    // In trading, compliance is determined by held allowances + eligible offsets (up to offsetUsageLimit %) vs actual emissions
+    const offsetLimitRatio = (this.parameters.offsetUsageLimit || 30) / 100;
     const stats = botFacilities.map(b => {
-      const maxOffsets = Math.floor(b.actualEmissions * (this.parameters.offsetUsageLimit / 100));
-      const effOffsets = Math.min(b.offsets, maxOffsets);
-      const borrowLimit = this.parameters.borrowingAllowed ? Math.floor(b.baselineEmissions * ((this.parameters.borrowingLimit != null ? this.parameters.borrowingLimit : 15) / 100)) : 0;
-      const coverage = b.allowances + effOffsets + borrowLimit;
-      const shortfall = b.actualEmissions - coverage;
-      return { bot: b, shortfall, compliant: shortfall <= 0 };
+      const maxOffsets = Math.floor(b.actualEmissions * offsetLimitRatio);
+      const effOffsets = Math.min(b.offsets || 0, maxOffsets);
+      const shortfall = b.actualEmissions - (b.allowances + effOffsets);
+      return { bot: b, shortfall, compliant: shortfall <= 0, maxOffsets, effOffsets };
     });
 
     const compliantBots = stats.filter(x => x.compliant).length;
     const humanFac = Object.values(this.facilities).find(f => !f.isBot);
     let humanCompliant = true;
     if (humanFac) {
-      const hMaxOffsets = Math.floor(humanFac.actualEmissions * (this.parameters.offsetUsageLimit / 100));
-      const hEffOffsets = Math.min(humanFac.offsets, hMaxOffsets);
-      const hBorrow = this.parameters.borrowingAllowed ? Math.floor(humanFac.baselineEmissions * ((this.parameters.borrowingLimit != null ? this.parameters.borrowingLimit : 15) / 100)) : 0;
-      humanCompliant = (humanFac.allowances + hEffOffsets + hBorrow) >= humanFac.actualEmissions;
+      const hMaxOffsets = Math.floor(humanFac.actualEmissions * offsetLimitRatio);
+      const hEffOffsets = Math.min(humanFac.offsets || 0, hMaxOffsets);
+      humanCompliant = (humanFac.allowances + hEffOffsets) >= humanFac.actualEmissions;
     }
     const totalCompliant = compliantBots + (humanCompliant ? 1 : 0);
 
-    // 4. Drive toward ~95% compliance
+    // 4. Drive toward target compliance rate via Diverse Pathways
     if (totalCompliant < targetCompliantCount) {
       const deficitList = stats.filter(x => !x.compliant).sort((a, b) => a.shortfall - b.shortfall);
       const needed = targetCompliantCount - totalCompliant;
-      // Target the candidate deficit bots with the smallest gaps first
-      const activeTargets = deficitList.slice(0, Math.min(needed + 2, deficitList.length));
+      // Pick 2-4 candidate deficit bots per tick to make incremental progress
+      const activeTargets = deficitList.slice(0, Math.min(needed + 2, 4));
 
       for (const item of activeTargets) {
         const dBot = item.bot;
         const strategy = dBot.complianceStrategy || 'HYBRID_BALANCED';
-        const mix = this.parameters.botStrategyMix || 'DIVERSE';
 
-        // Override/lean into specific strategy if admin chooses a specific mix
-        let effStrategy = strategy;
-        if (mix === 'ABATEMENT') effStrategy = Math.random() < 0.70 ? 'ABATEMENT_FOCUS' : strategy;
-        else if (mix === 'OFFSET') effStrategy = Math.random() < 0.70 ? 'OFFSET_FOCUS' : strategy;
-        else if (mix === 'ALLOWANCE') effStrategy = Math.random() < 0.70 ? 'ALLOWANCE_FOCUS' : strategy;
-
-        // PATHWAY 1: ABATEMENT_FOCUS (Tuân thủ bằng áp dụng biện pháp giảm phát thải nội bộ)
-        if (effStrategy === 'ABATEMENT_FOCUS') {
-          // Focus heavily on implementing abatement projects (MAC)
+        // PATHWAY 1: ABATEMENT_FOCUS (Ưu tiên đầu tư công nghệ giảm phát thải MAC)
+        if (strategy === 'ABATEMENT_FOCUS') {
+          // Look for an unimplemented abatement project
           const tech = dBot.abatementTechnologies.find(t => !t.implemented && t.capex <= dBot.cash * 0.85 && t.unitCost <= 11.5);
-          if (tech) {
+          if (tech && Math.random() < 0.60) {
             try {
               this.implementAbatement(dBot.id, tech.id);
-              this.log('ABATEMENT', `🌿 ${dBot.name} triển khai giải pháp công nghệ: "${tech.nameVi || tech.name}" cắt giảm ${tech.abatementTons.toLocaleString()} tCO2e/năm.`);
+              this.log('ABATEMENT', `🌿 ${dBot.name} triển khai giải pháp: "${tech.nameVi || tech.name}" cắt giảm ${tech.abatementTons.toLocaleString()} tCO2e/năm.`);
             } catch(e) {}
           }
 
-          // Check if shortfall remains after decarbonization
-          const curShortfall = Math.max(0, dBot.actualEmissions - (dBot.allowances + (dBot.offsets || 0)));
-          if (curShortfall > 0 && this.allowanceBook.asks.length > 0 && Math.random() < 0.40) {
+          // Trade residual deficit on allowance market
+          const curShortfall = Math.max(0, dBot.actualEmissions - (dBot.allowances + Math.min(dBot.offsets || 0, Math.floor(dBot.actualEmissions * offsetLimitRatio))));
+          if (curShortfall > 0 && this.allowanceBook.asks.length > 0) {
             const bestAsk = this.allowanceBook.asks[0].price;
-            const buyQty = Math.min(curShortfall, 4000);
-            if (buyQty > 0 && dBot.cash > buyQty * bestAsk) {
+            const affordQty = Math.floor(dBot.cash / bestAsk);
+            const buyQty = Math.max(500, Math.min(curShortfall, affordQty, 5000));
+            if (buyQty >= 500) {
               try {
                 this.placeOrder({
                   facilityId: dBot.id,
@@ -2174,34 +2140,37 @@ class Simulation {
           }
         }
 
-        // PATHWAY 2: OFFSET_FOCUS (Tuân thủ bằng mua tín chỉ các-bon bù trừ lên đến trần 30%)
-        else if (effStrategy === 'OFFSET_FOCUS') {
-          const maxOffsets = Math.floor(dBot.actualEmissions * (this.parameters.offsetUsageLimit / 100));
+        // PATHWAY 2: OFFSET_FOCUS (Tận dụng mua tín chỉ bù trừ lên đến trần 30%)
+        else if (strategy === 'OFFSET_FOCUS') {
+          const maxOffsets = Math.floor(dBot.actualEmissions * offsetLimitRatio);
           const offsetCapRemaining = Math.max(0, maxOffsets - (dBot.offsets || 0));
 
-          // Aggressively purchase carbon credits from offset registry
-          if (offsetCapRemaining > 0 && this.offsetBook.asks.length > 0) {
-            const buyOffset = Math.min(item.shortfall, offsetCapRemaining, 6000);
-            if (buyOffset > 0 && dBot.cash > buyOffset * (this.offsetBook.asks[0]?.price || 3.0)) {
+          if (offsetCapRemaining > 500 && this.offsetBook.asks.length > 0) {
+            const bestOffsetAsk = this.offsetBook.asks[0].price;
+            const affordOffset = Math.floor(dBot.cash / bestOffsetAsk);
+            const buyOffset = Math.max(500, Math.min(item.shortfall, offsetCapRemaining, affordOffset, 6000));
+            if (buyOffset >= 500) {
               try {
                 this.placeOrder({
                   facilityId: dBot.id,
                   side: 'BUY',
                   instrument: 'OFFSET',
                   type: 'LIMIT',
-                  price: this.offsetBook.asks[0]?.price || 3.0,
+                  price: bestOffsetAsk,
                   quantity: buyOffset
                 });
               } catch(e) {}
             }
           }
 
-          // Remainder covered by allowances if offsets reached limit or asks exhausted
-          const curShortfall = Math.max(0, dBot.actualEmissions - (dBot.allowances + (dBot.offsets || 0)));
-          if (curShortfall > 0 && this.allowanceBook.asks.length > 0 && Math.random() < 0.50) {
+          // Remainder covered by allowances
+          const effOffsetsNow = Math.min(dBot.offsets || 0, maxOffsets);
+          const curShortfall = Math.max(0, dBot.actualEmissions - (dBot.allowances + effOffsetsNow));
+          if (curShortfall > 0 && this.allowanceBook.asks.length > 0) {
             const bestAsk = this.allowanceBook.asks[0].price;
-            const buyAllow = Math.min(curShortfall, 5000);
-            if (buyAllow > 0 && dBot.cash > buyAllow * bestAsk) {
+            const affordQty = Math.floor(dBot.cash / bestAsk);
+            const buyAllow = Math.max(500, Math.min(curShortfall, affordQty, 5000));
+            if (buyAllow >= 500) {
               try {
                 this.placeOrder({
                   facilityId: dBot.id,
@@ -2216,81 +2185,62 @@ class Simulation {
           }
         }
 
-        // PATHWAY 3: ALLOWANCE_FOCUS (Tuân thủ bằng mua bán hạn ngạch tập trung trên sàn ETS)
-        else if (effStrategy === 'ALLOWANCE_FOCUS') {
-          // Zero abatement capex, zero offsets: 100% allowance market trading
+        // PATHWAY 3: ALLOWANCE_FOCUS (Tập trung giao dịch hạn ngạch sàn ETS)
+        else if (strategy === 'ALLOWANCE_FOCUS') {
           if (this.allowanceBook.asks.length > 0) {
             const bestAsk = this.allowanceBook.asks[0].price;
-            const maxWillingPrice = (trend === 'BEARISH' && !isLatePeriod)
-              ? currentPrice * 1.02
-              : Math.min(priceCeiling, penaltyRate * (0.85 + 0.15 * lateUrgency));
-
-            if (bestAsk <= maxWillingPrice) {
-              const buyAllow = Math.min(item.shortfall, (lateUrgency > 0.4 ? 8000 : 5000));
-              if (buyAllow > 0 && dBot.cash > buyAllow * bestAsk) {
-                try {
-                  this.placeOrder({
-                    facilityId: dBot.id,
-                    side: 'BUY',
-                    instrument: 'ALLOWANCE',
-                    type: 'LIMIT',
-                    price: bestAsk,
-                    quantity: buyAllow
-                  });
-                } catch(e) {}
-              }
-            }
-          } else if (this.allowanceBook.bids.length < 4 && Math.random() < 0.45) {
-            let bidPrice = currentPrice * (0.98 + Math.random() * 0.03) * netPriceMultiplier;
-            bidPrice = Math.round(Math.min(priceCeiling, Math.max(priceFloor, bidPrice)) * 100) / 100;
-            const bidQty = Math.min(item.shortfall, 4000);
-            if (bidQty > 0 && dBot.cash > bidQty * bidPrice) {
+            const affordQty = Math.floor(dBot.cash / bestAsk);
+            const buyAllow = Math.max(500, Math.min(item.shortfall, affordQty, 6000));
+            if (buyAllow >= 500) {
               try {
                 this.placeOrder({
                   facilityId: dBot.id,
                   side: 'BUY',
                   instrument: 'ALLOWANCE',
                   type: 'LIMIT',
-                  price: bidPrice,
-                  quantity: bidQty
+                  price: bestAsk,
+                  quantity: buyAllow
                 });
               } catch(e) {}
             }
           }
         }
 
-        // PATHWAY 4: HYBRID_BALANCED (Chiến lược Kết hợp - Tối ưu hóa đa phương thức)
+        // PATHWAY 4: HYBRID_BALANCED (Chiến lược kết hợp đa phương thức)
         else {
-          // 1. High-ROI low-cost abatement project first (unitCost <= $3.50)
-          const cheapTech = dBot.abatementTechnologies.find(t => !t.implemented && t.capex <= dBot.cash * 0.50 && t.unitCost <= 3.50);
-          if (cheapTech && Math.random() < 0.35) {
+          // 1. Inexpensive tech abatement (unitCost <= $4.00)
+          const cheapTech = dBot.abatementTechnologies.find(t => !t.implemented && t.capex <= dBot.cash * 0.50 && t.unitCost <= 4.00);
+          if (cheapTech && Math.random() < 0.40) {
             try { this.implementAbatement(dBot.id, cheapTech.id); } catch(e) {}
           }
 
-          // 2. Moderate carbon credits (~15-20% of emissions)
-          const maxOffsets = Math.floor(dBot.actualEmissions * 0.20);
-          if (dBot.offsets < maxOffsets && this.offsetBook.asks.length > 0 && Math.random() < 0.40) {
-            const buyOffset = Math.min(item.shortfall, maxOffsets - dBot.offsets, 3000);
-            if (buyOffset > 0 && dBot.cash > buyOffset * 3.5) {
+          // 2. Modest offset allocation (~15% of emissions)
+          const targetOffsets = Math.floor(dBot.actualEmissions * 0.15);
+          if ((dBot.offsets || 0) < targetOffsets && this.offsetBook.asks.length > 0 && Math.random() < 0.50) {
+            const bestOffsetAsk = this.offsetBook.asks[0].price;
+            const buyOffset = Math.max(500, Math.min(item.shortfall, targetOffsets - (dBot.offsets || 0), Math.floor(dBot.cash / bestOffsetAsk), 3000));
+            if (buyOffset >= 500) {
               try {
                 this.placeOrder({
                   facilityId: dBot.id,
                   side: 'BUY',
                   instrument: 'OFFSET',
                   type: 'LIMIT',
-                  price: this.offsetBook.asks[0]?.price || 3.0,
+                  price: bestOffsetAsk,
                   quantity: buyOffset
                 });
               } catch(e) {}
             }
           }
 
-          // 3. Balance remaining obligation with allowances
-          const curShortfall = Math.max(0, dBot.actualEmissions - (dBot.allowances + (dBot.offsets || 0)));
+          // 3. Balance with allowances
+          const effOffsetsNow = Math.min(dBot.offsets || 0, Math.floor(dBot.actualEmissions * offsetLimitRatio));
+          const curShortfall = Math.max(0, dBot.actualEmissions - (dBot.allowances + effOffsetsNow));
           if (curShortfall > 0 && this.allowanceBook.asks.length > 0) {
             const bestAsk = this.allowanceBook.asks[0].price;
-            const buyAllow = Math.min(curShortfall, 4000);
-            if (buyAllow > 0 && dBot.cash > buyAllow * bestAsk) {
+            const affordQty = Math.floor(dBot.cash / bestAsk);
+            const buyAllow = Math.max(500, Math.min(curShortfall, affordQty, 5000));
+            if (buyAllow >= 500) {
               try {
                 this.placeOrder({
                   facilityId: dBot.id,
@@ -2305,23 +2255,49 @@ class Simulation {
           }
         }
       }
-    } else {
-      // 5. Market is already at or above 95% target compliance: maintain steady liquid depth reflecting trend
-      const randomBot = botFacilities[Math.floor(Math.random() * botFacilities.length)];
-      if (randomBot && Math.random() < 0.20) {
-        if (randomBot.allowances > randomBot.actualEmissions + 2000) {
-          let askPrice = currentPrice * (0.99 + Math.random() * 0.03) * netPriceMultiplier;
-          askPrice = Math.round(Math.min(priceCeiling, Math.max(priceFloor, askPrice)) * 100) / 100;
-          try {
-            this.placeOrder({
-              facilityId: randomBot.id,
-              side: 'SELL',
-              instrument: 'ALLOWANCE',
-              type: 'LIMIT',
-              price: askPrice,
-              quantity: 2000
-            });
-          } catch(e) {}
+    }
+
+    // 5. Continuous Floor Liquidity & Active Trading
+    // Guarantee that realistic executed trades continuously take place on the floor,
+    // so market charts, order books, and trade history remain active and dynamic.
+    if (Math.random() < 0.75) {
+      if (Math.random() < 0.65 && this.allowanceBook.asks.length > 0) {
+        // Active Allowance Market Trade
+        const buyerBot = botFacilities[Math.floor(Math.random() * botFacilities.length)];
+        const bestAsk = this.allowanceBook.asks[0].price;
+        if (buyerBot && buyerBot.cash > bestAsk * 1500) {
+          const qty = Math.min(Math.floor(buyerBot.cash / bestAsk), Math.floor(Math.random() * 2500 + 1000));
+          if (qty >= 500) {
+            try {
+              this.placeOrder({
+                facilityId: buyerBot.id,
+                side: 'BUY',
+                instrument: 'ALLOWANCE',
+                type: 'LIMIT',
+                price: bestAsk,
+                quantity: qty
+              });
+            } catch(e) {}
+          }
+        }
+      } else if (this.offsetBook.asks.length > 0) {
+        // Active Offset Market Trade
+        const buyerBot = botFacilities[Math.floor(Math.random() * botFacilities.length)];
+        const bestOffsetAsk = this.offsetBook.asks[0].price;
+        if (buyerBot && buyerBot.cash > bestOffsetAsk * 1500) {
+          const qty = Math.min(Math.floor(buyerBot.cash / bestOffsetAsk), Math.floor(Math.random() * 2000 + 1000));
+          if (qty >= 500) {
+            try {
+              this.placeOrder({
+                facilityId: buyerBot.id,
+                side: 'BUY',
+                instrument: 'OFFSET',
+                type: 'LIMIT',
+                price: bestOffsetAsk,
+                quantity: qty
+              });
+            } catch(e) {}
+          }
         }
       }
     }
