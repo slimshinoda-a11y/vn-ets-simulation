@@ -13,16 +13,10 @@ class OrderBook {
     this.lowPrice = this.lastPrice;
     this.volume = 0;
     
-    // Seed initial price trajectory
+    // Initialize clean benchmark start point for the current simulation session
     const now = Date.now();
-    const baseP = this.lastPrice;
     this.priceHistory = [
-      { time: now - 300000, price: baseP * 0.96, volume: 5000 },
-      { time: now - 240000, price: baseP * 0.98, volume: 8000 },
-      { time: now - 180000, price: baseP * 1.02, volume: 12000 },
-      { time: now - 120000, price: baseP * 1.01, volume: 9000 },
-      { time: now - 60000,  price: baseP * 0.99, volume: 15000 },
-      { time: now,          price: baseP,        volume: 10000 }
+      { time: now, price: this.lastPrice, volume: 0, isInitial: true }
     ];
   }
 
@@ -35,13 +29,10 @@ class OrderBook {
     this.lowPrice = this.lastPrice;
     this.volume = 0;
     
+    // Fresh session start: starts clean with only the initial benchmark price point of this session
     const now = Date.now();
-    const baseP = this.lastPrice;
     this.priceHistory = [
-      { time: now - 180000, price: baseP * 0.97, volume: 5000 },
-      { time: now - 120000, price: baseP * 1.02, volume: 8000 },
-      { time: now - 60000,  price: baseP * 0.99, volume: 12000 },
-      { time: now,          price: baseP,        volume: 0 }
+      { time: now, price: this.lastPrice, volume: 0, isInitial: true }
     ];
   }
 
@@ -170,7 +161,7 @@ class OrderBook {
       };
 
       this.trades.unshift(trade);
-      if (this.trades.length > 200) this.trades.pop();
+      if (this.trades.length > 2000) this.trades.pop();
 
       executedTrades.push(trade);
 
@@ -181,11 +172,16 @@ class OrderBook {
       this.volume += tradeQty;
 
       this.priceHistory.push({
-        time: Date.now(),
+        id: trade.id,
+        time: trade.timestamp || Date.now(),
         price: executionPrice,
-        volume: tradeQty
+        volume: tradeQty,
+        instrument: this.instrument,
+        buyer: trade.buyerFacilityName,
+        seller: trade.sellerFacilityName
       });
-      if (this.priceHistory.length > 300) {
+      // Retain full session trade history
+      if (this.priceHistory.length > 10000) {
         this.priceHistory.shift();
       }
 
@@ -241,8 +237,9 @@ class OrderBook {
       asks: this.asks,
       bidsCount: this.bids.length,
       asksCount: this.asks.length,
-      recentTrades: this.trades.slice(0, 30),
-      priceHistory: this.priceHistory.slice(-100)
+      recentTrades: this.trades.slice(0, 50),
+      totalTradesCount: this.trades.length,
+      priceHistory: this.priceHistory // Send complete session trade history
     };
   }
 }

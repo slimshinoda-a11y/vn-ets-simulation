@@ -14,55 +14,89 @@ export default function PriceSignalChart({
   const [showAllowance, setShowAllowance] = useState(true);
   const [showOffset, setShowOffset] = useState(true);
   const [hoveredPoint, setHoveredPoint] = useState(null);
-  const [timeRange, setTimeRange] = useState('ALL'); // '30', '60', 'ALL'
+  const [timeRange, setTimeRange] = useState('ALL'); // '50', '100', 'ALL'
 
-  // Prepare unified time series
-  const chartData = useMemo(() => {
-    const timeMap = new Map();
+  // Prepare unified time series preserving EVERY trade in the simulation session
+  const { chartData, totalTradesCount } = useMemo(() => {
+    const events = [];
 
-    const addEntries = (list, key) => {
-      (list || []).forEach(pt => {
-        // Round to nearest 5 seconds for visual alignment
-        const t = Math.floor(pt.time / 5000) * 5000;
-        if (!timeMap.has(t)) {
-          timeMap.set(t, { time: t, allowancePrice: null, offsetPrice: null, volume: 0 });
-        }
-        const entry = timeMap.get(t);
-        entry[key] = pt.price;
-        entry.volume += (pt.volume || 0);
+    (allowanceHistory || []).forEach(pt => {
+      events.push({
+        id: pt.id || `allowance-${pt.time}-${Math.random()}`,
+        time: pt.time,
+        type: 'ALLOWANCE',
+        tradePrice: pt.price,
+        volume: pt.volume || 0,
+        buyer: pt.buyer,
+        seller: pt.seller,
+        isInitial: !!pt.isInitial
       });
-    };
+    });
 
-    addEntries(allowanceHistory, 'allowancePrice');
-    addEntries(offsetHistory, 'offsetPrice');
+    (offsetHistory || []).forEach(pt => {
+      events.push({
+        id: pt.id || `offset-${pt.time}-${Math.random()}`,
+        time: pt.time,
+        type: 'OFFSET',
+        tradePrice: pt.price,
+        volume: pt.volume || 0,
+        buyer: pt.buyer,
+        seller: pt.seller,
+        isInitial: !!pt.isInitial
+      });
+    });
 
-    const sorted = Array.from(timeMap.values()).sort((a, b) => a.time - b.time);
+    // Chronological order
+    events.sort((a, b) => a.time - b.time);
 
-    // Forward fill missing values so lines connect smoothly
-    let lastA = allowanceLastPrice;
-    let lastO = offsetLastPrice;
+    let curAllowance = allowanceLastPrice;
+    let curOffset = offsetLastPrice;
 
-    const filled = sorted.map(d => {
-      if (d.allowancePrice != null) lastA = d.allowancePrice;
-      if (d.offsetPrice != null) lastO = d.offsetPrice;
+    // Discover initial starting prices from earliest points if marked isInitial
+    for (const ev of events) {
+      if (ev.isInitial) {
+        if (ev.type === 'ALLOWANCE') curAllowance = ev.tradePrice;
+        if (ev.type === 'OFFSET') curOffset = ev.tradePrice;
+      }
+    }
+
+    if (events.length === 0) {
+      const now = Date.now();
       return {
-        ...d,
-        allowancePrice: d.allowancePrice ?? lastA,
-        offsetPrice: d.offsetPrice ?? lastO
+        chartData: [
+          {
+            time: now,
+            allowancePrice: allowanceLastPrice,
+            offsetPrice: offsetLastPrice,
+            volume: 0,
+            isInitial: true
+          }
+        ],
+        totalTradesCount: 0
+      };
+    }
+
+    let actualTradeCount = 0;
+    const series = events.map(ev => {
+      if (!ev.isInitial && ev.volume > 0) {
+        actualTradeCount++;
+      }
+      if (ev.type === 'ALLOWANCE') curAllowance = ev.tradePrice;
+      if (ev.type === 'OFFSET') curOffset = ev.tradePrice;
+
+      return {
+        ...ev,
+        allowancePrice: curAllowance,
+        offsetPrice: curOffset
       };
     });
 
-    if (filled.length === 0) {
-      const now = Date.now();
-      return [
-        { time: now - 60000, allowancePrice: allowanceLastPrice * 0.98, offsetPrice: offsetLastPrice * 0.98, volume: 1000 },
-        { time: now, allowancePrice: allowanceLastPrice, offsetPrice: offsetLastPrice, volume: 2000 }
-      ];
-    }
+    let filtered = series;
+    if (timeRange === '50') filtered = series.slice(-50);
+    else if (timeRange === '100') filtered = series.slice(-100);
+    // 'ALL' retains EVERY trade point in the entire session
 
-    if (timeRange === '30') return filled.slice(-30);
-    if (timeRange === '60') return filled.slice(-60);
-    return filled.slice(-100);
+    return { chartData: filtered, totalTradesCount: actualTradeCount };
   }, [allowanceHistory, offsetHistory, allowanceLastPrice, offsetLastPrice, timeRange]);
 
   // Dimensions for SVG rendering
@@ -75,7 +109,8 @@ export default function PriceSignalChart({
   // Min and max price range with margin
   const allPrices = chartData.flatMap(d => [
     showAllowance ? d.allowancePrice : null,
-    showOffset ? d.offsetPrice : null
+    showOffset ? d.offsetPrice : null,
+    d.tradePrice
   ]).filter(p => p != null && !isNaN(p));
 
   const minPrice = allPrices.length > 0 ? Math.max(0, Math.min(...allPrices) * 0.85) : 0;
@@ -83,12 +118,18 @@ export default function PriceSignalChart({
   const priceRange = maxPrice - minPrice || 1;
 
   // Coordinate mappers
-  const getX = (index) => padding.left + (index / (chartData.length - 1 || 1)) * graphWidth;
+  const getX = (index) => padding.left + (chartData.length <= 1 ? 0.5 : index / (chartData.length - 1)) * graphWidth;
   const getY = (price) => padding.top + (1 - (price - minPrice) / priceRange) * graphHeight;
 
   // Build SVG path strings
   const buildPath = (key) => {
     if (chartData.length === 0) return '';
+    if (chartData.length === 1) {
+      const val = chartData[0][key];
+      if (val == null) return '';
+      const y = getY(val);
+      return `M ${padding.left} ${y} L ${width - padding.right} ${y}`;
+    }
     return chartData.reduce((path, d, i) => {
       const val = d[key];
       if (val == null) return path;
@@ -166,7 +207,7 @@ export default function PriceSignalChart({
       </div>
 
       {/* Chart Toolbar Controls: Filters & Timeframes */}
-      <div className="flex items-center justify-between text-xs text-slate-400">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
         
         {/* Series Toggles */}
         <div className="flex items-center gap-4">
@@ -194,28 +235,31 @@ export default function PriceSignalChart({
         {/* Time range buttons */}
         <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-[11px] font-mono">
           <button
-            onClick={() => setTimeRange('30')}
+            onClick={() => setTimeRange('50')}
             className={`px-2 py-0.5 rounded-lg transition-all cursor-pointer ${
-              timeRange === '30' ? 'bg-slate-800 text-white font-bold' : 'text-slate-400 hover:text-white'
+              timeRange === '50' ? 'bg-slate-800 text-white font-bold' : 'text-slate-400 hover:text-white'
             }`}
           >
-            30 pts
+            50 {isVi ? 'gần nhất' : 'pts'}
           </button>
           <button
-            onClick={() => setTimeRange('60')}
+            onClick={() => setTimeRange('100')}
             className={`px-2 py-0.5 rounded-lg transition-all cursor-pointer ${
-              timeRange === '60' ? 'bg-slate-800 text-white font-bold' : 'text-slate-400 hover:text-white'
+              timeRange === '100' ? 'bg-slate-800 text-white font-bold' : 'text-slate-400 hover:text-white'
             }`}
           >
-            60 pts
+            100 {isVi ? 'gần nhất' : 'pts'}
           </button>
           <button
             onClick={() => setTimeRange('ALL')}
-            className={`px-2 py-0.5 rounded-lg transition-all cursor-pointer ${
-              timeRange === 'ALL' ? 'bg-slate-800 text-white font-bold' : 'text-slate-400 hover:text-white'
+            className={`px-2.5 py-0.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+              timeRange === 'ALL' ? 'bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 font-bold' : 'text-slate-400 hover:text-white'
             }`}
           >
-            {isVi ? 'Tất cả' : 'All'}
+            <span>{isVi ? 'Toàn bộ phiên' : 'All Trades'}</span>
+            <span className="text-[10px] bg-slate-800 px-1.5 py-0.2 rounded-full font-mono text-emerald-400 border border-slate-700">
+              {chartData.length}
+            </span>
           </button>
         </div>
 
@@ -286,7 +330,8 @@ export default function PriceSignalChart({
 
           {/* Mini Volume Bar Histogram at chart bottom */}
           {chartData.map((d, i) => {
-            const vHeight = (d.volume / maxVol) * 35;
+            if (!d.volume) return null;
+            const vHeight = Math.max(3, (d.volume / maxVol) * 35);
             const x = getX(i) - 1.5;
             const y = padding.top + graphHeight - vHeight;
             return (
@@ -297,7 +342,7 @@ export default function PriceSignalChart({
                 width="3"
                 height={vHeight}
                 fill="#3b82f6"
-                opacity="0.3"
+                opacity="0.35"
                 rx="1"
               />
             );
@@ -331,6 +376,27 @@ export default function PriceSignalChart({
               strokeLinejoin="round"
             />
           )}
+
+          {/* Individual trade markers for every executed trade */}
+          {chartData.map((d, i) => {
+            if (d.isInitial || !d.volume) return null;
+            const isA = d.type === 'ALLOWANCE';
+            const show = isA ? showAllowance : showOffset;
+            if (!show) return null;
+            const x = getX(i);
+            const y = getY(d.tradePrice || (isA ? d.allowancePrice : d.offsetPrice));
+            return (
+              <circle
+                key={d.id || i}
+                cx={x}
+                cy={y}
+                r={chartData.length > 150 ? 2 : 3}
+                fill={isA ? '#10b981' : '#14b8a6'}
+                stroke="#020617"
+                strokeWidth="1.2"
+              />
+            );
+          })}
 
           {/* Hover Crosshair Guide Line & Points */}
           {hoveredPoint && (
@@ -394,36 +460,67 @@ export default function PriceSignalChart({
         {/* Hover Floating Tooltip */}
         {hoveredPoint && (
           <div 
-            className="absolute top-4 pointer-events-none bg-slate-900/95 border border-slate-700 rounded-xl p-2.5 shadow-2xl text-xs space-y-1 font-mono z-20 backdrop-blur-md"
+            className="absolute top-4 pointer-events-none bg-slate-900/95 border border-slate-700 rounded-xl p-3 shadow-2xl text-xs space-y-1.5 font-mono z-20 backdrop-blur-md min-w-[210px]"
             style={{
-              left: `${Math.min(80, Math.max(10, (hoveredPoint.x / width) * 100))}%`
+              left: `${Math.min(75, Math.max(10, (hoveredPoint.x / width) * 100))}%`
             }}
           >
-            <div className="text-[10px] text-slate-400 flex items-center gap-1 border-b border-slate-800 pb-1">
-              <Clock className="w-3 h-3 text-slate-500" />
-              <span>{new Date(hoveredPoint.time).toLocaleTimeString()}</span>
+            <div className="text-[10px] text-slate-400 flex items-center justify-between border-b border-slate-800 pb-1">
+              <div className="flex items-center gap-1">
+                <Clock className="w-3 h-3 text-slate-500" />
+                <span>{new Date(hoveredPoint.time).toLocaleTimeString()}</span>
+              </div>
+              {hoveredPoint.isInitial ? (
+                <span className="text-amber-400 font-semibold px-1.5 py-0.5 rounded bg-amber-950/60 border border-amber-800/50 text-[9px]">
+                  {isVi ? 'Khởi tạo phiên' : 'Session Init'}
+                </span>
+              ) : (
+                <span className={`font-semibold px-1.5 py-0.5 rounded text-[9px] border ${
+                  hoveredPoint.type === 'ALLOWANCE' 
+                    ? 'bg-emerald-950/80 text-emerald-300 border-emerald-800/60' 
+                    : 'bg-teal-950/80 text-teal-300 border-teal-800/60'
+                }`}>
+                  {hoveredPoint.type === 'ALLOWANCE' ? (isVi ? 'Khớp Hạn ngạch' : 'Allowance Exec') : (isVi ? 'Khớp Tín chỉ' : 'Offset Exec')}
+                </span>
+              )}
             </div>
 
-            {showAllowance && hoveredPoint.allowancePrice != null && (
-              <div className="flex items-center justify-between gap-3 text-emerald-400">
-                <span>{isVi ? 'Hạn ngạch:' : 'Allowance:'}</span>
-                <span className="font-bold">{formatCurrency(hoveredPoint.allowancePrice, currency)}/t</span>
+            {/* Trade Details if an executed trade */}
+            {!hoveredPoint.isInitial && hoveredPoint.tradePrice != null && (
+              <div className="bg-slate-950/80 p-2 rounded-lg border border-slate-800 text-[11px] space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">{isVi ? 'Giá khớp:' : 'Exec Price:'}</span>
+                  <span className="font-bold text-white">{formatCurrency(hoveredPoint.tradePrice, currency)}/t</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">{isVi ? 'Khối lượng:' : 'Volume:'}</span>
+                  <span className="font-bold text-amber-400">{(hoveredPoint.volume || 0).toLocaleString()} tCO2</span>
+                </div>
+                {(hoveredPoint.buyer || hoveredPoint.seller) && (
+                  <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-800 space-y-0.5">
+                    <div className="truncate"><span className="text-emerald-400 font-semibold">{isVi ? 'Mua:' : 'Buy:'}</span> {hoveredPoint.buyer || 'N/A'}</div>
+                    <div className="truncate"><span className="text-rose-400 font-semibold">{isVi ? 'Bán:' : 'Sell:'}</span> {hoveredPoint.seller || 'N/A'}</div>
+                  </div>
+                )}
               </div>
             )}
 
-            {showOffset && hoveredPoint.offsetPrice != null && (
-              <div className="flex items-center justify-between gap-3 text-teal-400">
-                <span>{isVi ? 'Tín chỉ:' : 'Offset:'}</span>
-                <span className="font-bold">{formatCurrency(hoveredPoint.offsetPrice, currency)}/t</span>
-              </div>
-            )}
+            {/* Price levels */}
+            <div className="space-y-0.5 pt-0.5">
+              {showAllowance && hoveredPoint.allowancePrice != null && (
+                <div className="flex items-center justify-between gap-3 text-emerald-400 text-[11px]">
+                  <span>{isVi ? 'Hạn ngạch:' : 'Allowance:'}</span>
+                  <span className="font-bold">{formatCurrency(hoveredPoint.allowancePrice, currency)}/t</span>
+                </div>
+              )}
 
-            {hoveredPoint.volume > 0 && (
-              <div className="flex items-center justify-between gap-3 text-slate-400 text-[10px] pt-0.5 border-t border-slate-800">
-                <span>{isVi ? 'Khối lượng:' : 'Volume:'}</span>
-                <span>{hoveredPoint.volume.toLocaleString()} t</span>
-              </div>
-            )}
+              {showOffset && hoveredPoint.offsetPrice != null && (
+                <div className="flex items-center justify-between gap-3 text-teal-400 text-[11px]">
+                  <span>{isVi ? 'Tín chỉ:' : 'Offset:'}</span>
+                  <span className="font-bold">{formatCurrency(hoveredPoint.offsetPrice, currency)}/t</span>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
