@@ -3,13 +3,16 @@ import {
   BarChart3, 
   Trophy, 
   Activity, 
-  Clock
+  Clock,
+  Sparkles,
+  TrendingDown,
+  CheckCircle2
 } from 'lucide-react';
 import { translations, formatCurrency } from '../i18n';
 import PriceSignalChart from './PriceSignalChart';
 
 export default function MarketBoard({ state, lang = 'vi', currency = 'USD', isAdmin = false }) {
-  const [leaderboardFilter, setLeaderboardFilter] = useState('all'); // 'all' | 'surplus' | 'deficit' | 'abatement' | 'profit'
+  const [leaderboardFilter, setLeaderboardFilter] = useState('all'); // 'all' | 'cost_efficiency' | 'surplus' | 'deficit' | 'abatement' | 'profit'
   const t = translations[lang] || translations.vi;
   const isVi = lang === 'vi';
 
@@ -34,15 +37,61 @@ export default function MarketBoard({ state, lang = 'vi', currency = 'USD', isAd
     ? Math.round((totalSystemAbatement / totalSystemBaseline) * 100) 
     : 0;
 
+  // Helper to compute economic compliance metrics for each facility
+  const getFacilityComplianceMetrics = (f) => {
+    // 1. Capex from implemented decarbonization projects
+    const abatementCapex = (f.abatementTechnologies || [])
+      .filter(t => t.implemented)
+      .reduce((sum, t) => sum + (t.capex || 0), 0);
+
+    // 2. Net cost from market trading: Buy (+ cost), Sell (- revenue)
+    const netTradeCost = (f.trades || []).reduce((sum, tr) => {
+      return sum + (tr.role === 'BUY' ? tr.totalCost : -tr.totalCost);
+    }, 0);
+
+    // 3. Total compliance cost (uses backend complianceCost if available, otherwise computed)
+    const totalCost = f.complianceCost !== undefined 
+      ? f.complianceCost 
+      : (abatementCapex + netTradeCost);
+
+    const emissions = f.actualEmissions || f.baselineEmissions || 1;
+    const totalUnits = (f.allowances || 0) + (f.offsets || 0);
+    const net = totalUnits - f.actualEmissions;
+    const isCompliant = net >= 0;
+
+    // 4. Cost per ton of verified emissions ($/tCO2e)
+    const costPerTon = emissions > 0 ? (totalCost / emissions) : 0;
+
+    return {
+      abatementCapex,
+      netTradeCost,
+      totalCost,
+      costPerTon,
+      isCompliant,
+      net,
+      emissions,
+      totalUnits
+    };
+  };
+
   const filteredFacilities = facilityList.filter(f => {
     const net = (f.allowances + f.offsets) - f.actualEmissions;
     if (leaderboardFilter === 'surplus') return net > 1000 || f.techTier === 'ADVANCED';
     if (leaderboardFilter === 'deficit') return net < -1000 || f.techTier === 'LEGACY';
+    if (leaderboardFilter === 'cost_efficiency') {
+      // Filter for facilities that have met compliance obligations
+      return net >= 0;
+    }
     return true;
   });
 
   const sortedFacilities = [...filteredFacilities].sort((a, b) => {
-    if (leaderboardFilter === 'abatement') {
+    if (leaderboardFilter === 'cost_efficiency') {
+      const metricA = getFacilityComplianceMetrics(a);
+      const metricB = getFacilityComplianceMetrics(b);
+      // Smallest cost per ton first (lowest $/tCO2e / most profitable)
+      return metricA.costPerTon - metricB.costPerTon;
+    } else if (leaderboardFilter === 'abatement') {
       const pctA = a.baselineEmissions ? a.implementedAbatement / a.baselineEmissions : 0;
       const pctB = b.baselineEmissions ? b.implementedAbatement / b.baselineEmissions : 0;
       return pctB - pctA;
@@ -171,6 +220,20 @@ export default function MarketBoard({ state, lang = 'vi', currency = 'USD', isAd
               >
                 {isVi ? 'Tất Cả' : 'All'}
               </button>
+
+              {/* Economic Cost Efficiency Leaderboard Tab */}
+              <button
+                onClick={() => setLeaderboardFilter('cost_efficiency')}
+                className={`px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  leaderboardFilter === 'cost_efficiency'
+                    ? 'bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-600 text-white shadow-sm shadow-emerald-500/25 border border-emerald-400/30'
+                    : 'text-emerald-400 hover:text-white hover:bg-slate-900'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                <span>{t.costEfficiencyFilter || (isVi ? 'Hiệu Quả Chi Phí ($/tCO2)' : 'Cost Efficiency ($/t)')}</span>
+              </button>
+
               {isAdmin && (
                 <>
                   <button
@@ -218,87 +281,240 @@ export default function MarketBoard({ state, lang = 'vi', currency = 'USD', isAd
             </div>
           </div>
 
+          {/* Dedicated Context Banner when in Cost Efficiency Mode */}
+          {leaderboardFilter === 'cost_efficiency' && (
+            <div className="p-3.5 rounded-2xl bg-gradient-to-r from-emerald-950/40 via-teal-950/30 to-slate-900 border border-emerald-500/30 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in duration-200">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2 font-bold text-emerald-300 text-sm">
+                  <Sparkles className="w-4 h-4 text-emerald-400" />
+                  <span>{isVi ? 'Bảng Xếp Hạng Cơ Sở Tuân Thủ Với Hiệu Quả Kinh Tế Tốt Nhất' : 'Most Cost-Effective Compliant Facilities Leaderboard'}</span>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  {isVi
+                    ? 'Xếp hạng các cơ sở đã hoàn thành nghĩa vụ tuân thủ (Hạn ngạch + Tín chỉ ≥ Phát thải thực tế) theo chi phí bình quân thấp nhất trên mỗi tấn phát thải ($/tCO2e = Tổng chi phí công nghệ & giao dịch ròng / Phát thải thực tế). Các cơ sở chủ động khử carbon và bán thặng dư hạn ngạch thu lãi ròng được xếp ở vị trí dẫn đầu.'
+                    : 'Ranks compliant facilities by lowest average compliance cost per ton ($/tCO2e = Total Abatement Capex + Net Market Trading / Actual Emissions). Facilities that profited from selling surplus allowances rank at the top.'}
+                </p>
+              </div>
+              {sortedFacilities.length > 0 && (
+                <div className="shrink-0 bg-slate-900/90 px-3 py-2 rounded-xl border border-emerald-500/40 text-right">
+                  <span className="text-[10px] text-slate-400 block">{isVi ? 'Quán quân hiệu quả kinh tế:' : 'Most Cost-Effective:'}</span>
+                  <span className="font-bold text-emerald-400 text-xs font-mono">{sortedFacilities[0].name}</span>
+                  <span className="text-[10px] text-emerald-300/80 block font-mono">
+                    {(() => {
+                      const m = getFacilityComplianceMetrics(sortedFacilities[0]);
+                      return m.costPerTon < 0 ? `Lãi ròng $${Math.abs(m.costPerTon).toFixed(2)}/t` : `$${m.costPerTon.toFixed(2)}/tCO2e`;
+                    })()}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="text-[11px] font-semibold text-slate-400 border-b border-slate-800">
-                <tr>
-                  <th className="pb-3 w-10 text-center">{t.rank}</th>
-                  <th className="pb-3">{t.facilityAndSector}</th>
-                  <th className="pb-3 text-right">{t.actualEmissions}</th>
-                  <th className="pb-3 text-right">{t.decarbonizationRate}</th>
-                  <th className="pb-3 text-right">{isVi ? 'Hạn ngạch + Tín chỉ' : 'Allowances + Offsets'}</th>
-                  <th className="pb-3 text-right">{isVi ? 'Thặng dư/Thiếu' : 'Position'}</th>
-                  <th className="pb-3 text-right">{t.liquidCash}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 font-mono">
-                {sortedFacilities.map((fac, idx) => {
-                  const abtPct = fac.baselineEmissions > 0 
-                    ? Math.round((fac.implementedAbatement / fac.baselineEmissions) * 100) 
-                    : 0;
-                  const totalUnits = fac.allowances + fac.offsets;
-                  const net = totalUnits - fac.actualEmissions;
-                  const isSurplus = net >= 0;
+              {leaderboardFilter === 'cost_efficiency' ? (
+                <thead className="text-[11px] font-semibold text-slate-400 border-b border-slate-800">
+                  <tr>
+                    <th className="pb-3 w-10 text-center">{t.rank}</th>
+                    <th className="pb-3">{t.facilityAndSector}</th>
+                    <th className="pb-3 text-right">{t.actualEmissions}</th>
+                    <th className="pb-3 text-right">{t.abatementCapex || (isVi ? 'Đầu Tư Giảm Phát Thải' : 'Abatement Capex')}</th>
+                    <th className="pb-3 text-right">{t.netMarketTrading || (isVi ? 'Giao Dịch Sàn ETS' : 'Net Trading')}</th>
+                    <th className="pb-3 text-right">{t.totalComplianceCost || (isVi ? 'Tổng Chi Phí' : 'Total Cost')}</th>
+                    <th className="pb-3 text-right font-bold text-emerald-400">{t.costPerTon || (isVi ? 'Chi Phí / tCO2e' : 'Cost / tCO2e')}</th>
+                    <th className="pb-3 text-center">{t.economicEfficiency || (isVi ? 'Đánh Giá Hiệu Quả' : 'Assessment')}</th>
+                  </tr>
+                </thead>
+              ) : (
+                <thead className="text-[11px] font-semibold text-slate-400 border-b border-slate-800">
+                  <tr>
+                    <th className="pb-3 w-10 text-center">{t.rank}</th>
+                    <th className="pb-3">{t.facilityAndSector}</th>
+                    <th className="pb-3 text-right">{t.actualEmissions}</th>
+                    <th className="pb-3 text-right">{t.decarbonizationRate}</th>
+                    <th className="pb-3 text-right">{isVi ? 'Hạn ngạch + Tín chỉ' : 'Allowances + Offsets'}</th>
+                    <th className="pb-3 text-right">{isVi ? 'Thặng dư/Thiếu' : 'Position'}</th>
+                    <th className="pb-3 text-right">{t.liquidCash}</th>
+                  </tr>
+                </thead>
+              )}
 
-                  return (
-                    <tr key={fac.id} className="hover:bg-slate-950/40">
-                      <td className="py-3 text-center">
-                        {idx === 0 ? (
-                          <span className="w-6 h-6 rounded-full bg-amber-500/20 text-amber-300 font-bold inline-flex items-center justify-center text-xs border border-amber-500/40">
-                            1
-                          </span>
-                        ) : idx === 1 ? (
-                          <span className="w-6 h-6 rounded-full bg-slate-300/20 text-slate-200 font-bold inline-flex items-center justify-center text-xs border border-slate-400/40">
-                            2
-                          </span>
-                        ) : idx === 2 ? (
-                          <span className="w-6 h-6 rounded-full bg-amber-700/20 text-amber-500 font-bold inline-flex items-center justify-center text-xs border border-amber-700/40">
-                            3
-                          </span>
-                        ) : (
-                          <span className="text-slate-500 font-bold">{idx + 1}</span>
-                        )}
-                      </td>
-                      <td className="py-3">
-                        <div className="flex items-center gap-2">
-                          <span className="font-sans font-bold text-white text-xs">{fac.name}</span>
-                          {isAdmin && fac.techTier === 'ADVANCED' && (
-                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                              {isVi ? 'Tiên tiến' : 'Advanced'}
+              <tbody className="divide-y divide-slate-800/60 font-mono">
+                {sortedFacilities.length === 0 ? (
+                  <tr>
+                    <td colSpan={leaderboardFilter === 'cost_efficiency' ? 8 : 7} className="py-8 text-center text-slate-500 italic">
+                      {isVi 
+                        ? 'Chưa có cơ sở nào đạt 100% tuân thủ hạn ngạch trong kỳ này. Các cơ sở đang tích cực giao dịch và khử carbon trên sàn.' 
+                        : 'No facilities have achieved full compliance yet this period. Trading and abatement are in progress.'}
+                    </td>
+                  </tr>
+                ) : (
+                  sortedFacilities.map((fac, idx) => {
+                    const metric = getFacilityComplianceMetrics(fac);
+                    const abtPct = fac.baselineEmissions > 0 
+                      ? Math.round((fac.implementedAbatement / fac.baselineEmissions) * 100) 
+                      : 0;
+                    const totalUnits = fac.allowances + fac.offsets;
+                    const net = totalUnits - fac.actualEmissions;
+                    const isSurplus = net >= 0;
+
+                    if (leaderboardFilter === 'cost_efficiency') {
+                      return (
+                        <tr key={fac.id} className="hover:bg-slate-950/40 transition-colors">
+                          <td className="py-3 text-center">
+                            {idx === 0 ? (
+                              <span className="w-6 h-6 rounded-full bg-amber-500/20 text-amber-300 font-bold inline-flex items-center justify-center text-xs border border-amber-500/40">
+                                🥇
+                              </span>
+                            ) : idx === 1 ? (
+                              <span className="w-6 h-6 rounded-full bg-slate-300/20 text-slate-200 font-bold inline-flex items-center justify-center text-xs border border-slate-400/40">
+                                🥈
+                              </span>
+                            ) : idx === 2 ? (
+                              <span className="w-6 h-6 rounded-full bg-amber-700/20 text-amber-500 font-bold inline-flex items-center justify-center text-xs border border-amber-700/40">
+                                🥉
+                              </span>
+                            ) : (
+                              <span className="text-slate-500 font-bold">{idx + 1}</span>
+                            )}
+                          </td>
+                          <td className="py-3">
+                            <div className="flex items-center gap-2">
+                              <span className="font-sans font-bold text-white text-xs">{fac.name}</span>
+                              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                {isVi ? '✓ Tuân thủ' : '✓ Compliant'}
+                              </span>
+                              {isAdmin && fac.techTier === 'ADVANCED' && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                                  {isVi ? 'Tiên tiến' : 'Advanced'}
+                                </span>
+                              )}
+                            </div>
+                            <div className="font-sans text-[10px] text-slate-400">{fac.sectorType}</div>
+                          </td>
+                          <td className="py-3 text-right text-slate-300">
+                            {fac.actualEmissions.toLocaleString()} t
+                          </td>
+                          <td className="py-3 text-right text-slate-300">
+                            {metric.abatementCapex > 0 ? formatCurrency(metric.abatementCapex, currency, true) : '—'}
+                          </td>
+                          <td className="py-3 text-right">
+                            {metric.netTradeCost > 0 ? (
+                              <span className="text-amber-400">+{formatCurrency(metric.netTradeCost, currency, true)}</span>
+                            ) : metric.netTradeCost < 0 ? (
+                              <span className="text-emerald-400 font-semibold">-{formatCurrency(Math.abs(metric.netTradeCost), currency, true)}</span>
+                            ) : (
+                              <span className="text-slate-500">$0</span>
+                            )}
+                          </td>
+                          <td className={`py-3 text-right font-bold ${metric.totalCost <= 0 ? 'text-emerald-400' : 'text-slate-200'}`}>
+                            {metric.totalCost < 0 
+                              ? `-${formatCurrency(Math.abs(metric.totalCost), currency, true)}` 
+                              : formatCurrency(metric.totalCost, currency, true)}
+                          </td>
+                          <td className="py-3 text-right">
+                            {metric.costPerTon < 0 ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-black text-xs border border-emerald-500/40">
+                                {isVi ? `+Lãi $${Math.abs(metric.costPerTon).toFixed(2)}/t` : `+Profit $${Math.abs(metric.costPerTon).toFixed(2)}/t`}
+                              </span>
+                            ) : metric.costPerTon === 0 ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-300 font-bold text-xs border border-teal-500/40">
+                                $0.00/t
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 font-bold text-xs border border-cyan-500/40">
+                                ${metric.costPerTon.toFixed(2)}/t
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 text-center">
+                            {metric.costPerTon < 0 ? (
+                              <span className="text-[10px] font-bold text-emerald-400">
+                                {isVi ? '🏆 Lãi ròng từ ETS' : '🏆 Net ETS Profit'}
+                              </span>
+                            ) : metric.costPerTon === 0 ? (
+                              <span className="text-[10px] font-bold text-teal-400">
+                                {isVi ? '💎 100% Cấp miễn phí' : '💎 Zero Net Cost'}
+                              </span>
+                            ) : metric.costPerTon < 1.50 ? (
+                              <span className="text-[10px] font-bold text-cyan-400">
+                                {isVi ? '🌟 Tối ưu chi phí thấp' : '🌟 High Efficiency'}
+                              </span>
+                            ) : metric.costPerTon < 4.00 ? (
+                              <span className="text-[10px] font-bold text-blue-400">
+                                {isVi ? '✅ Tuân thủ hiệu quả' : '✅ Cost-Effective'}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-bold text-slate-400">
+                                {isVi ? '⚖️ Tuân thủ chuẩn' : '⚖️ Standard Cost'}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    }
+
+                    // Default non-cost-efficiency row
+                    return (
+                      <tr key={fac.id} className="hover:bg-slate-950/40">
+                        <td className="py-3 text-center">
+                          {idx === 0 ? (
+                            <span className="w-6 h-6 rounded-full bg-amber-500/20 text-amber-300 font-bold inline-flex items-center justify-center text-xs border border-amber-500/40">
+                              1
                             </span>
-                          )}
-                          {isAdmin && fac.techTier === 'LEGACY' && (
-                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
-                              {isVi ? 'Lạc hậu' : 'Legacy'}
+                          ) : idx === 1 ? (
+                            <span className="w-6 h-6 rounded-full bg-slate-300/20 text-slate-200 font-bold inline-flex items-center justify-center text-xs border border-slate-400/40">
+                              2
                             </span>
-                          )}
-                          {isAdmin && fac.techTier === 'STANDARD' && (
-                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                              {isVi ? 'Chuẩn' : 'Standard'}
+                          ) : idx === 2 ? (
+                            <span className="w-6 h-6 rounded-full bg-amber-700/20 text-amber-500 font-bold inline-flex items-center justify-center text-xs border border-amber-700/40">
+                              3
                             </span>
+                          ) : (
+                            <span className="text-slate-500 font-bold">{idx + 1}</span>
                           )}
-                        </div>
-                        <div className="font-sans text-[10px] text-slate-400">{fac.sectorType}</div>
-                      </td>
-                      <td className="py-3 text-right text-slate-300">
-                        {fac.actualEmissions.toLocaleString()} t
-                      </td>
-                      <td className="py-3 text-right">
-                        <span className="font-bold text-teal-400">{abtPct}%</span>
-                        <span className="text-[10px] text-slate-500 ml-1">(-{fac.implementedAbatement.toLocaleString()} t)</span>
-                      </td>
-                      <td className="py-3 text-right text-slate-300">
-                        {totalUnits.toLocaleString()}
-                      </td>
-                      <td className={`py-3 text-right font-bold ${isSurplus ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {isSurplus ? `+${net.toLocaleString()} t` : `-${Math.abs(net).toLocaleString()} t`}
-                      </td>
-                      <td className="py-3 text-right font-bold text-slate-200">
-                        {formatCurrency(fac.cash, currency, true)}
-                      </td>
-                    </tr>
-                  );
-                })}
+                        </td>
+                        <td className="py-3">
+                          <div className="flex items-center gap-2">
+                            <span className="font-sans font-bold text-white text-xs">{fac.name}</span>
+                            {isAdmin && fac.techTier === 'ADVANCED' && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                {isVi ? 'Tiên tiến' : 'Advanced'}
+                              </span>
+                            )}
+                            {isAdmin && fac.techTier === 'LEGACY' && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                                {isVi ? 'Lạc hậu' : 'Legacy'}
+                              </span>
+                            )}
+                            {isAdmin && fac.techTier === 'STANDARD' && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                                {isVi ? 'Chuẩn' : 'Standard'}
+                              </span>
+                            )}
+                          </div>
+                          <div className="font-sans text-[10px] text-slate-400">{fac.sectorType}</div>
+                        </td>
+                        <td className="py-3 text-right text-slate-300">
+                          {fac.actualEmissions.toLocaleString()} t
+                        </td>
+                        <td className="py-3 text-right">
+                          <span className="font-bold text-teal-400">{abtPct}%</span>
+                          <span className="text-[10px] text-slate-500 ml-1">(-{fac.implementedAbatement.toLocaleString()} t)</span>
+                        </td>
+                        <td className="py-3 text-right text-slate-300">
+                          {totalUnits.toLocaleString()}
+                        </td>
+                        <td className={`py-3 text-right font-bold ${isSurplus ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {isSurplus ? `+${net.toLocaleString()} t` : `-${Math.abs(net).toLocaleString()} t`}
+                        </td>
+                        <td className="py-3 text-right font-bold text-slate-200">
+                          {formatCurrency(fac.cash, currency, true)}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>

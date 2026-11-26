@@ -273,6 +273,7 @@ class Simulation {
         cash: template.startingCash,
         annualRevenue: template.annualRevenue,
         cumulativeProfit: 0,
+        complianceCost: 0,
         cumulativeComplianceCost: 0,
 
         // Emissions & Allowances
@@ -478,6 +479,7 @@ class Simulation {
         cash: cash,
         annualRevenue: template.annualRevenue,
         cumulativeProfit: 0,
+        complianceCost: 0,
         cumulativeComplianceCost: 0,
 
         // Emissions & Allowances
@@ -640,6 +642,7 @@ class Simulation {
       cash: template.startingCash,
       annualRevenue: template.annualRevenue,
       cumulativeProfit: 0,
+      complianceCost: 0,
       cumulativeComplianceCost: 0,
 
       baselineEmissions: baseline,
@@ -707,6 +710,8 @@ class Simulation {
     }
 
     fac.cash -= tech.capex;
+    fac.complianceCost = (fac.complianceCost || 0) + tech.capex;
+    fac.cumulativeComplianceCost = (fac.cumulativeComplianceCost || 0) + tech.capex;
     tech.implemented = true;
     tech.implementedPeriod = this.currentPeriod;
 
@@ -849,6 +854,8 @@ class Simulation {
 
     if (buyer) {
       buyer.cash -= trade.totalCost;
+      buyer.complianceCost = (buyer.complianceCost || 0) + trade.totalCost;
+      buyer.cumulativeComplianceCost = (buyer.cumulativeComplianceCost || 0) + trade.totalCost;
       if (trade.instrument === 'ALLOWANCE') {
         buyer.allowances += trade.quantity;
       } else {
@@ -870,6 +877,8 @@ class Simulation {
 
     if (seller) {
       seller.cash += trade.totalCost;
+      seller.complianceCost = (seller.complianceCost || 0) - trade.totalCost;
+      seller.cumulativeComplianceCost = (seller.cumulativeComplianceCost || 0) - trade.totalCost;
       if (trade.instrument === 'ALLOWANCE') {
         seller.allowances = Math.max(0, (seller.allowances || 0) - trade.quantity);
       } else {
@@ -1343,6 +1352,8 @@ class Simulation {
       if (fac) {
         const cost = alloc.allocated * clearingPrice;
         fac.cash -= cost;
+        fac.complianceCost = (fac.complianceCost || 0) + cost;
+        fac.cumulativeComplianceCost = (fac.cumulativeComplianceCost || 0) + cost;
         fac.allowances += alloc.allocated;
       }
     });
