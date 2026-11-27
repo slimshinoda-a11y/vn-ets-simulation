@@ -34,6 +34,7 @@ import {
   Trophy
 } from 'lucide-react';
 import { translations, formatCurrency, formatNumber } from '../i18n';
+import { exportSimulationAuditExcel } from '../utils/exportAuditExcel';
 
 export default function AdminConsole({ 
   state, 
@@ -83,6 +84,9 @@ export default function AdminConsole({
     botPriceIntensity: parameters?.botPriceIntensity != null ? parameters.botPriceIntensity : 50,
     botEndPeriodScarcity: parameters?.botEndPeriodScarcity ?? true,
     botStrategyMix: parameters?.botStrategyMix || 'DIVERSE',
+    enterpriseEmissionGrowthEnabled: parameters?.enterpriseEmissionGrowthEnabled ?? true,
+    enterpriseEmissionGrowthRate: parameters?.enterpriseEmissionGrowthRate != null ? parameters.enterpriseEmissionGrowthRate : 3.5,
+    enterpriseEmissionGrowthMode: parameters?.enterpriseEmissionGrowthMode || 'SECTOR_BASED',
     periodDuration: state?.periodDuration || 600,
     totalPeriods: state?.totalPeriods || 3
   });
@@ -169,7 +173,10 @@ export default function AdminConsole({
         botPriceTrend: parameters.botPriceTrend || prev.botPriceTrend,
         botPriceIntensity: parameters.botPriceIntensity != null ? parameters.botPriceIntensity : prev.botPriceIntensity,
         botEndPeriodScarcity: parameters.botEndPeriodScarcity ?? prev.botEndPeriodScarcity,
-        botStrategyMix: parameters.botStrategyMix || prev.botStrategyMix
+        botStrategyMix: parameters.botStrategyMix || prev.botStrategyMix,
+        enterpriseEmissionGrowthEnabled: parameters.enterpriseEmissionGrowthEnabled ?? prev.enterpriseEmissionGrowthEnabled,
+        enterpriseEmissionGrowthRate: parameters.enterpriseEmissionGrowthRate != null ? parameters.enterpriseEmissionGrowthRate : prev.enterpriseEmissionGrowthRate,
+        enterpriseEmissionGrowthMode: parameters.enterpriseEmissionGrowthMode || prev.enterpriseEmissionGrowthMode
       }));
     }
   }, [
@@ -182,7 +189,10 @@ export default function AdminConsole({
     parameters?.botPriceTrend,
     parameters?.botPriceIntensity,
     parameters?.botEndPeriodScarcity,
-    parameters?.botStrategyMix
+    parameters?.botStrategyMix,
+    parameters?.enterpriseEmissionGrowthEnabled,
+    parameters?.enterpriseEmissionGrowthRate,
+    parameters?.enterpriseEmissionGrowthMode
   ]);
 
   const handleUpdatePeriodRatio = (p, val) => {
@@ -504,7 +514,10 @@ export default function AdminConsole({
         const res = await onSyncCapToEmissions(curRatio, true, {
           totalCap: baseCap,
           periodCapRatios,
-          periodCaps: pCaps
+          periodCaps: pCaps,
+          enterpriseEmissionGrowthEnabled: form.enterpriseEmissionGrowthEnabled ?? true,
+          enterpriseEmissionGrowthRate: form.enterpriseEmissionGrowthRate != null ? Number(form.enterpriseEmissionGrowthRate) : 3.5,
+          enterpriseEmissionGrowthMode: form.enterpriseEmissionGrowthMode || 'SECTOR_BASED'
         });
         if (res?.totalCap) {
           setForm(prev => ({ 
@@ -521,7 +534,10 @@ export default function AdminConsole({
           capStringencyRatio: curRatio, 
           syncCapWithEmissions: true,
           periodCapRatios,
-          periodCaps: pCaps
+          periodCaps: pCaps,
+          enterpriseEmissionGrowthEnabled: form.enterpriseEmissionGrowthEnabled ?? true,
+          enterpriseEmissionGrowthRate: form.enterpriseEmissionGrowthRate != null ? Number(form.enterpriseEmissionGrowthRate) : 3.5,
+          enterpriseEmissionGrowthMode: form.enterpriseEmissionGrowthMode || 'SECTOR_BASED'
         });
         setForm(prev => ({ 
           ...prev, 
@@ -721,17 +737,25 @@ export default function AdminConsole({
               <>
                 <button
                   onClick={() => onPhaseAction('settle')}
-                  className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow-lg shadow-emerald-600/30 transition-all cursor-pointer"
+                  className={`flex items-center gap-2 px-4 py-2 text-white rounded-lg text-xs font-bold shadow-lg transition-all cursor-pointer ${
+                    history?.some(h => h.period === currentPeriod)
+                      ? 'bg-slate-700 hover:bg-slate-600 border border-slate-600'
+                      : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/30'
+                  }`}
                 >
                   <CheckCircle className="w-4 h-4" />
-                  <span>{t.executeSettlement}</span>
+                  <span>{history?.some(h => h.period === currentPeriod) ? (isVi ? 'Đã Chốt Sổ Tuân Thủ' : 'Settlement Completed') : t.executeSettlement}</span>
                 </button>
 
                 <button
                   onClick={() => onPhaseAction('next-period')}
                   className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold shadow-lg shadow-purple-600/30 transition-all cursor-pointer"
                 >
-                  <span>{t.advancePeriod} {currentPeriod + 1}</span>
+                  <span>
+                    {history?.some(h => h.period === currentPeriod) 
+                      ? `${t.advancePeriod} ${currentPeriod + 1}` 
+                      : (isVi ? `Chốt Sổ & Sang Kỳ ${currentPeriod + 1}` : `Settle & Advance to Period ${currentPeriod + 1}`)}
+                  </span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </>
@@ -767,6 +791,16 @@ export default function AdminConsole({
             >
               <Trophy className="w-3.5 h-3.5 text-amber-300" />
               <span>{isVi ? 'Tổng Kết 2025–2030' : 'Pilot 2025–2030'}</span>
+            </button>
+
+            {/* Quick Access to Export Audit Excel */}
+            <button
+              onClick={() => exportSimulationAuditExcel(state, lang)}
+              className="flex items-center gap-1.5 px-3 py-2 bg-emerald-950/70 hover:bg-emerald-900 text-emerald-300 border border-emerald-500/50 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-md shadow-emerald-950/30"
+              title={isVi ? 'Xuất báo cáo Excel đối chiếu số dư hạn ngạch, phân bổ và lịch sử giao dịch toàn sàn' : 'Export Excel Audit Report with facility balances and trades'}
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+              <span>{isVi ? 'Xuất Excel Kiểm Soát' : 'Export Audit Excel'}</span>
             </button>
 
             <button
@@ -1012,6 +1046,15 @@ export default function AdminConsole({
             >
               <FileText className="w-3.5 h-3.5" />
               <span>{isVi ? 'Tải Mẫu CSV' : 'Download CSV'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => exportSimulationAuditExcel(state, lang)}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-amber-950/80 hover:bg-amber-900 text-amber-300 border border-amber-500/50 shadow-sm transition-all cursor-pointer"
+              title={isVi ? 'Xuất toàn bộ bảng dữ liệu thực tế và giao dịch hiện tại ra Excel để kiểm soát' : 'Export all current facility data and trades to Excel for auditing'}
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-amber-400" />
+              <span>{isVi ? 'Xuất Dữ Liệu Thực Tế (.xlsx)' : 'Export Live Audit (.xlsx)'}</span>
             </button>
           </div>
         </div>
@@ -1569,6 +1612,210 @@ export default function AdminConsole({
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* ENTERPRISE EMISSIONS GROWTH FACTOR (DEVELOPING COUNTRY CONTEXT) */}
+          <div className="p-4 sm:p-5 rounded-2xl border bg-slate-950/80 border-amber-500/30 space-y-4 shadow-lg shadow-amber-950/10">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center font-black shrink-0">
+                  <TrendingUp className="w-5 h-5 text-amber-400" />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h4 className="font-extrabold text-white text-xs sm:text-sm">
+                      {isVi 
+                        ? 'Yếu Tố Tăng Trưởng Phát Thải Doanh Nghiệp Theo Kỳ (Quốc Gia Đang Phát Triển)' 
+                        : 'Enterprise Emissions Growth Factor Across Periods (Developing Nation Context)'}
+                    </h4>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono">
+                      {isVi ? 'Bối Cảnh Việt Nam' : 'Vietnam Context'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    {isVi
+                      ? 'Mô phỏng sự mở rộng tự nhiên của sản lượng và phát thải doanh nghiệp qua từng kỳ theo tăng trưởng kinh tế & Quy hoạch Điện VIII. Khi bước sang kỳ mới, phát thải cơ sở của các nhà máy sẽ tăng theo tỷ lệ đã chọn.'
+                      : 'Simulates organic expansion of industrial enterprise emissions across periods driven by economic GDP growth. When advancing periods, baseline emissions expand automatically.'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Toggle Switch */}
+              <label className="flex items-center gap-2.5 cursor-pointer self-end sm:self-center shrink-0 bg-slate-900/90 px-3 py-1.5 rounded-xl border border-slate-800 hover:border-amber-500/40 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={form.enterpriseEmissionGrowthEnabled ?? true}
+                  onChange={(e) => {
+                    const val = e.target.checked;
+                    setForm(prev => ({ ...prev, enterpriseEmissionGrowthEnabled: val }));
+                    if (onUpdateParameters) {
+                      onUpdateParameters({ enterpriseEmissionGrowthEnabled: val });
+                    }
+                  }}
+                  className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
+                />
+                <span className="text-xs font-bold font-mono text-amber-300">
+                  {form.enterpriseEmissionGrowthEnabled ?? true 
+                    ? (isVi ? 'KÍCH HOẠT' : 'ENABLED') 
+                    : (isVi ? 'TẮT' : 'DISABLED')}
+                </span>
+              </label>
+            </div>
+
+            {/* Controls when enabled */}
+            {(form.enterpriseEmissionGrowthEnabled ?? true) ? (
+              <div className="space-y-4 pt-1">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Rate Slider & Presets */}
+                  <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-300 font-semibold">
+                        {isVi ? 'Tốc độ tăng trưởng phát thải cơ sở mỗi kỳ:' : 'Base Emission Growth Rate per Period:'}
+                      </span>
+                      <span className="font-mono font-extrabold text-amber-400 text-sm">
+                        +{form.enterpriseEmissionGrowthRate ?? 3.5}% / {isVi ? 'kỳ' : 'period'}
+                      </span>
+                    </div>
+
+                    <input
+                      type="range"
+                      min="0"
+                      max="12"
+                      step="0.5"
+                      value={form.enterpriseEmissionGrowthRate ?? 3.5}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        setForm(prev => ({ ...prev, enterpriseEmissionGrowthRate: val }));
+                      }}
+                      onMouseUp={() => {
+                        if (onUpdateParameters) {
+                          onUpdateParameters({ enterpriseEmissionGrowthRate: form.enterpriseEmissionGrowthRate ?? 3.5 });
+                        }
+                      }}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+
+                    {/* Quick rate buttons */}
+                    <div className="grid grid-cols-4 gap-1.5 pt-1">
+                      {[
+                        { rate: 2.0, labelVi: '+2.0% (Thấp)', labelEn: '+2.0% (Low)' },
+                        { rate: 3.5, labelVi: '+3.5% (Chuẩn VN)', labelEn: '+3.5% (VN Base)' },
+                        { rate: 5.0, labelVi: '+5.0% (Năng động)', labelEn: '+5.0% (Dynamic)' },
+                        { rate: 7.5, labelVi: '+7.5% (Tăng tốc)', labelEn: '+7.5% (High)' }
+                      ].map(r => (
+                        <button
+                          key={r.rate}
+                          type="button"
+                          onClick={() => {
+                            setForm(prev => ({ ...prev, enterpriseEmissionGrowthRate: r.rate }));
+                            if (onUpdateParameters) {
+                              onUpdateParameters({ enterpriseEmissionGrowthRate: r.rate });
+                            }
+                          }}
+                          className={`py-1 px-1.5 rounded-lg text-[10px] font-mono font-bold border transition-all cursor-pointer truncate ${
+                            (form.enterpriseEmissionGrowthRate ?? 3.5) === r.rate
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                              : 'bg-slate-950/80 text-slate-400 border-slate-800 hover:text-white'
+                          }`}
+                        >
+                          {isVi ? r.labelVi : r.labelEn}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Growth Distribution Mode */}
+                  <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
+                    <div className="text-xs text-slate-300 font-semibold">
+                      {isVi ? 'Cơ chế phân bổ tăng trưởng:' : 'Growth Allocation Mechanism:'}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setForm(prev => ({ ...prev, enterpriseEmissionGrowthMode: 'SECTOR_BASED' }));
+                          if (onUpdateParameters) {
+                            onUpdateParameters({ enterpriseEmissionGrowthMode: 'SECTOR_BASED' });
+                          }
+                        }}
+                        className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
+                          (form.enterpriseEmissionGrowthMode || 'SECTOR_BASED') === 'SECTOR_BASED'
+                            ? 'bg-amber-950/40 border-amber-500/60 text-amber-200 ring-1 ring-amber-500/40 font-bold'
+                            : 'bg-slate-950/80 border-slate-800 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <div className="font-bold text-xs">{isVi ? 'Phân hóa theo ngành (Khuyên dùng)' : 'Sector-Based (Rec.)'}</div>
+                        <div className="text-[10px] text-slate-400 mt-1">
+                          {isVi 
+                            ? 'Điện: +130% tốc độ cơ sở; Thép: +105%; Xi măng: +80%; Khác: +95%' 
+                            : 'Power: +130% base rate; Steel: +105%; Cement: +80%; Others: +95%'}
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setForm(prev => ({ ...prev, enterpriseEmissionGrowthMode: 'UNIFORM' }));
+                          if (onUpdateParameters) {
+                            onUpdateParameters({ enterpriseEmissionGrowthMode: 'UNIFORM' });
+                          }
+                        }}
+                        className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
+                          form.enterpriseEmissionGrowthMode === 'UNIFORM'
+                            ? 'bg-amber-950/40 border-amber-500/60 text-amber-200 ring-1 ring-amber-500/40 font-bold'
+                            : 'bg-slate-950/80 border-slate-800 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <div className="font-bold text-xs">{isVi ? 'Đồng đều tất cả cơ sở' : 'Uniform Across All'}</div>
+                        <div className="text-[10px] text-slate-400 mt-1">
+                          {isVi 
+                            ? `Áp dụng đúng +${form.enterpriseEmissionGrowthRate ?? 3.5}% cho toàn bộ 110 cơ sở` 
+                            : `Apply exact +${form.enterpriseEmissionGrowthRate ?? 3.5}% to all facilities`}
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Multi-Period Projected Emissions Preview Banner */}
+                <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-1.5 text-slate-300 font-semibold text-[11px]">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{isVi ? 'Dự báo phát thải hệ thống theo lộ trình tăng trưởng:' : 'Projected System Emissions Across Periods:'}</span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3 font-mono text-[11px]">
+                    {Array.from({ length: totalPeriodsInput || state?.totalPeriods || 3 }).map((_, idx) => {
+                      const p = idx + 1;
+                      const gRate = (form.enterpriseEmissionGrowthRate ?? 3.5) / 100;
+                      const factor = Math.pow(1 + gRate, p - 1);
+                      const baseEmiss = metrics?.totalActualEmissions || totalSystemEmissions || 10700000;
+                      const proj = Math.round(baseEmiss * factor);
+                      return (
+                        <div key={p} className="flex items-center gap-1">
+                          <span className="text-slate-500 font-sans font-bold">Kỳ {p}:</span>
+                          <span className={p === 1 ? 'text-slate-300 font-bold' : 'text-amber-400 font-bold'}>
+                            {proj.toLocaleString()} t
+                          </span>
+                          {p > 1 && (
+                            <span className="text-[9px] text-amber-500">
+                              (+{((factor - 1) * 100).toFixed(1)}%)
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs text-slate-500 italic p-2 bg-slate-900/40 rounded-xl border border-slate-800/60">
+                {isVi 
+                  ? '⚠️ Yếu tố tăng trưởng phát thải đang tắt. Phát thải cơ sở của các doanh nghiệp sẽ giữ nguyên qua các kỳ (phù hợp với kịch bản các nước phát triển có sản lượng công nghiệp bão hòa).' 
+                  : '⚠️ Emissions growth factor disabled. Enterprise emissions will remain static across periods (representative of mature economies with stagnant output).'}
+              </div>
+            )}
           </div>
 
           {/* Individual Period Cap % Adjuster Cards */}

@@ -25,12 +25,18 @@ export default function ComplianceSurrenderModal({
   const actualEmissions = facility?.actualEmissions || 0;
   const allowancesHeld = facility?.allowances || 0;
   const offsetsHeld = facility?.offsets || 0;
+  const isAlreadySubmitted = Boolean(facility?.surrender?.submitted);
 
   // Offset limit constraint (30% under Decree 06)
   const maxAllowedOffsets = Math.floor(actualEmissions * ((parameters.offsetUsageLimit || 30) / 100));
 
-  const defaultOffsets = Math.min(offsetsHeld, maxAllowedOffsets);
-  const defaultAllowances = Math.min(allowancesHeld, Math.max(0, actualEmissions - defaultOffsets));
+  const defaultOffsets = isAlreadySubmitted && facility?.surrender?.offsetsToSurrender != null
+    ? Math.min(offsetsHeld, Math.min(maxAllowedOffsets, facility.surrender.offsetsToSurrender))
+    : Math.min(offsetsHeld, maxAllowedOffsets);
+
+  const defaultAllowances = isAlreadySubmitted && facility?.surrender?.allowancesToSurrender != null
+    ? Math.min(allowancesHeld, facility.surrender.allowancesToSurrender)
+    : Math.min(allowancesHeld, Math.max(0, actualEmissions - defaultOffsets));
 
   const [allowances, setAllowances] = useState(defaultAllowances);
   const [offsets, setOffsets] = useState(defaultOffsets);
@@ -82,7 +88,18 @@ export default function ComplianceSurrenderModal({
               <ShieldCheck className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-xl font-bold text-white">{t.surrenderDeskTitle}</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-bold text-white">{t.surrenderDeskTitle}</h2>
+                {isAlreadySubmitted ? (
+                  <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
+                    {isVi ? '✓ Đã nộp gói tuân thủ' : '✓ Surrender Submitted'}
+                  </span>
+                ) : (
+                  <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full font-bold">
+                    {isVi ? '⏳ Tự động nộp khi hết kỳ' : '⏳ Auto-submits at settlement'}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-400">{facility.name} • {isVi ? 'Quyết toán nghĩa vụ hạn ngạch' : 'Surrender Obligation Settlement'}</p>
             </div>
           </div>
@@ -265,13 +282,30 @@ export default function ComplianceSurrenderModal({
             </div>
           )}
 
+          {/* Automatic surrender & banking reassurance note */}
+          <div className="p-3 bg-blue-950/30 border border-blue-500/20 rounded-xl text-xs text-blue-300 flex items-start gap-2.5">
+            <ShieldCheck className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-semibold">{isVi ? 'Cơ Chế Nộp Trả & Lưu Giữ Tự Động:' : 'Automated Surrender & Banking Policy:'}</span>
+              <p className="text-[11px] text-blue-200/90 mt-0.5 leading-relaxed">
+                {isVi
+                  ? 'Nếu cơ sở không bấm xác nhận nộp thủ công, hệ thống sẽ tự động tối ưu hóa nộp trả (dùng tín chỉ bù trừ tối đa 30% và hạn ngạch khả dụng để tránh bị phạt tiền) và tự động lưu giữ (banking) toàn bộ hạn ngạch dư thừa sang kỳ tiếp theo.'
+                  : 'If not manually submitted before period close, the system will automatically optimize surrender (using up to 30% offsets and available allowances to prevent penalties) and automatically bank all surplus allowances to the next period.'}
+              </p>
+            </div>
+          </div>
+
           <div className="pt-2">
             <button
               type="submit"
               disabled={submitting}
               className="w-full py-3 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-lg shadow-blue-600/30 transition-all cursor-pointer"
             >
-              {submitting ? (isVi ? 'Đang xác nhận...' : 'Submitting Surrender...') : t.commitSurrender}
+              {submitting 
+                ? (isVi ? 'Đang xác nhận...' : 'Submitting Surrender...') 
+                : (isAlreadySubmitted 
+                    ? (isVi ? 'Cập Nhật Lại Gói Nộp Hạn Ngạch' : 'Update Surrender Package') 
+                    : t.commitSurrender)}
             </button>
           </div>
 

@@ -238,6 +238,7 @@ class OrderBook {
       bidsCount: this.bids.length,
       asksCount: this.asks.length,
       recentTrades: this.trades.slice(0, 50),
+      trades: this.trades, // Full session trade history for auditing and Excel export
       totalTradesCount: this.trades.length,
       priceHistory: this.priceHistory // Send complete session trade history
     };

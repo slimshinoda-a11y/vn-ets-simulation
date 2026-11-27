@@ -14,9 +14,11 @@ import {
   Award,
   ArrowRight,
   Zap,
-  CheckCircle2
+  CheckCircle2,
+  FileSpreadsheet
 } from 'lucide-react';
 import { formatCurrency } from '../i18n';
+import { exportSimulationAuditExcel } from '../utils/exportAuditExcel';
 
 export default function GrandPilotSummaryModal({
   isOpen,
@@ -104,7 +106,15 @@ export default function GrandPilotSummaryModal({
               </div>
             </div>
 
-            <div className="flex items-center gap-2 self-end md:self-auto">
+            <div className="flex flex-wrap items-center gap-2 self-end md:self-auto">
+              <button
+                onClick={() => exportSimulationAuditExcel(state, lang)}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-lg shadow-emerald-600/30 transition-all cursor-pointer"
+                title={isVi ? 'Xuất toàn bộ bảng phát thải và hạn ngạch của từng cơ sở theo từng kỳ ra Excel (.xlsx)' : 'Export full multi-period emissions and allowances per facility to Excel (.xlsx)'}
+              >
+                <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
+                <span>{isVi ? 'Xuất Báo Cáo Excel Các Kỳ' : 'Export Multi-Period Excel'}</span>
+              </button>
               <button
                 onClick={() => window.print()}
                 className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all cursor-pointer"
@@ -310,12 +320,22 @@ export default function GrandPilotSummaryModal({
               : 'Vietnam Greenhouse Gas Emission Trading Simulation Platform (MONRE)'}
           </div>
 
-          <button
-            onClick={onClose}
-            className="px-6 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-lg shadow-purple-600/30 transition-all cursor-pointer"
-          >
-            {isVi ? 'Hoàn Tất & Đóng Báo Cáo' : 'Close Grand Report'}
-          </button>
+          <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+            <button
+              onClick={() => exportSimulationAuditExcel(state, lang)}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg shadow-emerald-600/30 transition-all cursor-pointer"
+              title={isVi ? 'Xuất toàn bộ bảng phát thải và hạn ngạch của từng cơ sở theo từng kỳ ra Excel (.xlsx)' : 'Export full multi-period emissions and allowances per facility to Excel (.xlsx)'}
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
+              <span>{isVi ? 'Xuất Báo Cáo Excel Các Kỳ (.xlsx)' : 'Export Multi-Period Excel (.xlsx)'}</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="px-6 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-lg shadow-purple-600/30 transition-all cursor-pointer"
+            >
+              {isVi ? 'Hoàn Tất & Đóng' : 'Close Grand Report'}
+            </button>
+          </div>
         </div>
 
       </div>

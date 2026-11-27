@@ -389,9 +389,28 @@ app.post('/api/admin/facilities-count', requireAdmin, (req, res) => {
 
 app.post('/api/admin/cap-from-emissions', requireAdmin, (req, res) => {
   try {
-    const { ratio, redistribute, correctionFactor, periodCaps, periodCapRatios, totalCap } = req.body;
+    const { 
+      ratio, 
+      redistribute, 
+      correctionFactor, 
+      periodCaps, 
+      periodCapRatios, 
+      totalCap,
+      enterpriseEmissionGrowthEnabled,
+      enterpriseEmissionGrowthRate,
+      enterpriseEmissionGrowthMode
+    } = req.body;
     if (correctionFactor != null) {
       sim.parameters.correctionFactor = Number(correctionFactor);
+    }
+    if (enterpriseEmissionGrowthEnabled != null) {
+      sim.parameters.enterpriseEmissionGrowthEnabled = !!enterpriseEmissionGrowthEnabled;
+    }
+    if (enterpriseEmissionGrowthRate != null) {
+      sim.parameters.enterpriseEmissionGrowthRate = Number(enterpriseEmissionGrowthRate);
+    }
+    if (enterpriseEmissionGrowthMode != null) {
+      sim.parameters.enterpriseEmissionGrowthMode = enterpriseEmissionGrowthMode;
     }
     if (periodCaps != null) {
       sim.parameters.periodCaps = periodCaps;
@@ -516,6 +535,10 @@ app.post('/api/phase/settle', requireAdmin, (req, res) => {
 
 app.post('/api/phase/next-period', requireAdmin, (req, res) => {
   try {
+    const isAlreadySettled = sim.history.some(h => h.period === sim.currentPeriod);
+    if (!isAlreadySettled) {
+      sim.settleCompliance();
+    }
     sim.advanceToNextPeriod();
     broadcastState();
     res.json({ success: true, currentPeriod: sim.currentPeriod, phase: sim.phase });

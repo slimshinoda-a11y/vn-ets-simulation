@@ -38,6 +38,11 @@ class Simulation {
       
       // Correction Factor K (+4.0% per 2-year cycle for economic growth)
       correctionFactor: 4.0,
+
+      // Enterprise Emissions Growth Factor (Reflecting Vietnam as a Developing Nation)
+      enterpriseEmissionGrowthEnabled: true,
+      enterpriseEmissionGrowthRate: 3.5, // % per compliance period (~1.7%/year)
+      enterpriseEmissionGrowthMode: 'SECTOR_BASED', // 'SECTOR_BASED' | 'UNIFORM'
       
       // 100% Free Allocation
       freeAllocationRate: 100,
@@ -284,9 +289,10 @@ class Simulation {
         offsets: 0,
         allocatedAllowances: allocatedAllowances,
 
-        // Banking & Borrowing
+        // Banking & Borrowing & Deficit Debt
         bankedUnits: 0,
         borrowedUnits: 0,
+        unpaidDeficitDebt: 0,
         currentBorrowingRequest: 0,
 
         // Decarbonization techs
@@ -493,9 +499,10 @@ class Simulation {
         baseAllowance: allowances,
         importedActualEmissions: actualEmissions,
 
-        // Banking & Borrowing
+        // Banking & Borrowing & Deficit Debt
         bankedUnits: 0,
         borrowedUnits: 0,
+        unpaidDeficitDebt: 0,
         currentBorrowingRequest: 0,
 
         // Decarbonization techs
@@ -1570,6 +1577,7 @@ class Simulation {
     this.isPaused = false;
     this.log('POLICY', `Trading closed. Compliance Period ${this.currentPeriod} (${this.getPeriodYears(this.currentPeriod)}) settlement & surrender in progress`);
 
+    // Optimal surrender calculation for ALL facilities (both player and bot) that haven't submitted manually
     Object.values(this.facilities).forEach(fac => {
       try {
         if (fac.allowances < 0) fac.allowances = 0;
@@ -1590,7 +1598,9 @@ class Simulation {
             );
             const borrowLimit = this.parameters.borrowingLimit != null ? this.parameters.borrowingLimit : 15;
             const maxBorrowable = Math.floor(currentPeriodAlloc * (borrowLimit / 100));
-            borrowToUse = Math.min(deficitWithoutBorrow, maxBorrowable);
+            const alreadyBorrowed = fac.borrowedThisPeriod || 0;
+            const remainingBorrowable = Math.max(0, maxBorrowable - alreadyBorrowed);
+            borrowToUse = Math.min(deficitWithoutBorrow, remainingBorrowable);
           }
 
           this.submitSurrender(fac.id, {
@@ -1623,9 +1633,51 @@ class Simulation {
       if (fac.allowances < 0) fac.allowances = 0;
       if (fac.offsets < 0) fac.offsets = 0;
 
-      const surrender = fac.surrender || { allowancesToSurrender: 0, offsetsToSurrender: 0, borrowingRequested: 0 };
       const actualEmissions = fac.actualEmissions || 0;
       totalSystemEmissions += actualEmissions;
+
+      // --- AUTOMATIC OPTIMAL SURRENDER IF FACILITY DID NOT SUBMIT MANUALLY ---
+      let surrender = fac.surrender;
+      if (!surrender || !surrender.submitted) {
+        // Under Decree 06/2022/NĐ-CP: offsets capped at offsetUsageLimit% (default 30%)
+        const maxOffsets = Math.floor(actualEmissions * (this.parameters.offsetUsageLimit / 100));
+        const autoOffsets = Math.max(0, Math.min(fac.offsets || 0, maxOffsets));
+        const remEmissions = Math.max(0, actualEmissions - autoOffsets);
+        const autoAllowances = Math.max(0, Math.min(fac.allowances || 0, remEmissions));
+
+        let autoBorrow = 0;
+        const deficitWithoutBorrow = Math.max(0, remEmissions - autoAllowances);
+        if (deficitWithoutBorrow > 0 && this.parameters.borrowingAllowed) {
+          const currentPeriodAlloc = fac.allocatedAllowances || (
+            (this.parameters.isImported && fac.importedAllowance != null)
+              ? fac.importedAllowance
+              : fac.baselineEmissions
+          );
+          const borrowLimit = this.parameters.borrowingLimit != null ? this.parameters.borrowingLimit : 15;
+          const maxBorrowable = Math.floor(currentPeriodAlloc * (borrowLimit / 100));
+          const alreadyBorrowed = fac.borrowedThisPeriod || 0;
+          const remainingBorrowable = Math.max(0, maxBorrowable - alreadyBorrowed);
+          autoBorrow = Math.min(deficitWithoutBorrow, remainingBorrowable);
+        }
+
+        const autoDeficit = Math.max(0, actualEmissions - (autoAllowances + autoOffsets + autoBorrow));
+        const autoPenalty = autoDeficit * this.parameters.penaltyRate;
+
+        surrender = {
+          submitted: true,
+          isAutoSubmitted: true,
+          allowancesToSurrender: autoAllowances,
+          offsetsToSurrender: autoOffsets,
+          borrowingRequested: autoBorrow,
+          deficit: autoDeficit,
+          projectedPenalty: autoPenalty
+        };
+        fac.surrender = surrender;
+
+        if (autoAllowances > 0 || autoOffsets > 0 || autoBorrow > 0) {
+          this.log('COMPLIANCE', `🤖 Tự động nộp trả cho ${fac.name}: Đã tự động nộp ${autoAllowances.toLocaleString()} hạn ngạch + ${autoOffsets.toLocaleString()} tín chỉ bù trừ${autoBorrow > 0 ? ` + ${autoBorrow.toLocaleString()} vay hạn ngạch` : ''} để tối ưu tuân thủ (cơ sở không nộp thủ công cuối kỳ).`);
+        }
+      }
 
       const allowSurr = Math.max(0, Math.min(fac.allowances || 0, surrender.allowancesToSurrender || 0));
       const offSurr = Math.max(0, Math.min(fac.offsets || 0, surrender.offsetsToSurrender || 0));
@@ -1642,7 +1694,7 @@ class Simulation {
         fac.borrowedUnits += Math.round(surrender.borrowingRequested * bRate);
       }
 
-      const covered = surrender.allowancesToSurrender + surrender.offsetsToSurrender + (this.parameters.borrowingAllowed ? (surrender.borrowingRequested || 0) : 0);
+      const covered = allowSurr + offSurr + (this.parameters.borrowingAllowed ? (surrender.borrowingRequested || 0) : 0);
       const deficit = Math.max(0, actualEmissions - covered);
       const penalty = deficit * this.parameters.penaltyRate;
 
@@ -1652,6 +1704,13 @@ class Simulation {
         totalPenaltiesCollected += penalty;
       }
 
+      if (deficit > 0) {
+        // Record non-compliance deficit debt: Paying penalty does NOT excuse allowance surrender obligation.
+        // Unsurrendered deficit is carried over and mandatorily deducted from next period's allocation (Decree 06 / EU ETS Art 16).
+        fac.unpaidDeficitDebt = (fac.unpaidDeficitDebt || 0) + deficit;
+      }
+
+      // --- AUTOMATIC SURPLUS BANKING ---
       let bankedToNext = 0;
       let expiredUnits = 0;
       if (fac.allowances > 0) {
@@ -1660,12 +1719,16 @@ class Simulation {
           const maxBankable = Math.floor(fac.allowances * (bankLimit / 100));
           bankedToNext = maxBankable;
           expiredUnits = fac.allowances - maxBankable;
-          fac.bankedUnits += bankedToNext;
+          fac.bankedUnits = bankedToNext;
           fac.allowances = bankedToNext;
         } else {
           expiredUnits = fac.allowances;
+          fac.bankedUnits = 0;
           fac.allowances = 0;
         }
+      } else {
+        fac.bankedUnits = 0;
+        fac.allowances = 0;
       }
 
       const annualOpexSavings = fac.abatementTechnologies
@@ -1677,9 +1740,10 @@ class Simulation {
       const historyItem = {
         period: this.currentPeriod,
         periodYears: this.getPeriodYears(this.currentPeriod),
+        allocatedAllowances: fac.allocatedAllowances || 0,
         actualEmissions,
         baselineEmissions: fac.baselineEmissions,
-        abatedTons: fac.implementedAbatement,
+        abatedTons: fac.implementedAbatement || 0,
         surrenderedAllowances: surrender.allowancesToSurrender,
         surrenderedOffsets: surrender.offsetsToSurrender,
         borrowed: borrowedThisPeriod,
@@ -1957,11 +2021,70 @@ class Simulation {
       return;
     }
 
+    // MANDATORY GUARANTEE: Settle current compliance period if not already settled!
+    // A period cannot transition without formal compliance surrender, enforcement, and banking.
+    const isAlreadySettled = this.history.some(h => h.period === this.currentPeriod);
+    if (!isAlreadySettled) {
+      this.settleCompliance();
+    }
+
     this.currentPeriod += 1;
     this._loggedScarcity = false;
     this.phase = 'SETUP';
     this.isPaused = false;
     this.timeRemaining = this.periodDuration;
+
+    // --- Enterprise Emissions Growth (Developing Country Context) ---
+    const activeFacilities = Object.values(this.facilities);
+    let totalOldEmissions = 0;
+    let totalNewEmissions = 0;
+
+    const growthEnabled = this.parameters.enterpriseEmissionGrowthEnabled ?? true;
+    const baseGrowthRate = (this.parameters.enterpriseEmissionGrowthRate != null ? Number(this.parameters.enterpriseEmissionGrowthRate) : 3.5) / 100;
+    const growthMode = this.parameters.enterpriseEmissionGrowthMode || 'SECTOR_BASED';
+
+    if (growthEnabled && baseGrowthRate !== 0) {
+      activeFacilities.forEach(fac => {
+        totalOldEmissions += (fac.actualEmissions || 0);
+
+        // Calculate sector-specific growth factor if SECTOR_BASED
+        let facRate = baseGrowthRate;
+        if (growthMode === 'SECTOR_BASED') {
+          const s = (fac.sectorType || '').toLowerCase();
+          if (s.includes('điện') || s.includes('power') || s.includes('nhiệt điện')) {
+            facRate = baseGrowthRate * 1.30; // Ngành nhiệt điện tăng trưởng cao nhất theo Quy hoạch điện VIII
+          } else if (s.includes('thép') || s.includes('steel')) {
+            facRate = baseGrowthRate * 1.05; // Ngành luyện kim thép
+          } else if (s.includes('xi măng') || s.includes('cement')) {
+            facRate = baseGrowthRate * 0.80; // Xi măng & VLXD
+          } else {
+            facRate = baseGrowthRate * 0.95;
+          }
+        }
+
+        // Apply growth to baseline emissions
+        const grownBaseline = Math.round(fac.baselineEmissions * (1 + facRate));
+        fac.baselineEmissions = grownBaseline;
+
+        // Recalculate actual emissions: preserve technology efficiency tier and subtract ongoing abatement
+        const totalAbatement = (fac.abatementTechnologies || [])
+          .filter(t => t.implemented)
+          .reduce((sum, t) => sum + (t.abatementTons || 0), 0);
+        fac.implementedAbatement = totalAbatement;
+
+        const oldUnmitigated = (fac.actualEmissions || 0) + (fac.implementedAbatement || 0);
+        const newUnmitigated = Math.round(oldUnmitigated * (1 + facRate));
+        fac.actualEmissions = Math.max(0, newUnmitigated - totalAbatement);
+
+        totalNewEmissions += fac.actualEmissions;
+      });
+
+      const avgGrowthPct = totalOldEmissions > 0 
+        ? (((totalNewEmissions - totalOldEmissions) / totalOldEmissions) * 100).toFixed(1)
+        : (baseGrowthRate * 100).toFixed(1);
+
+      this.log('POLICY', `📈 Tăng trưởng phát thải doanh nghiệp Kỳ ${this.currentPeriod} (${this.getPeriodYears(this.currentPeriod)}): Phát thải cơ sở tăng trung bình +${avgGrowthPct}% phản ánh tăng trưởng kinh tế & mở rộng sản xuất của Việt Nam (Tổng phát thải hệ thống: ${totalNewEmissions.toLocaleString()} tCO2e).`);
+    }
 
     const correctionRate = (this.parameters.correctionFactor || 0) / 100;
     const periodRatio = this.parameters.periodCapRatios?.[this.currentPeriod] != null 
@@ -1973,8 +2096,7 @@ class Simulation {
       if (this.parameters.isImported && this.parameters.importedBaseCap > 0) {
         this.parameters.totalCap = Math.round(this.parameters.importedBaseCap * (periodRatio / 100));
       } else {
-        const activeFacs = Object.values(this.facilities);
-        const totalBaseline = activeFacs.reduce((sum, f) => sum + (f.baselineEmissions || 0), 0);
+        const totalBaseline = activeFacilities.reduce((sum, f) => sum + (f.baselineEmissions || 0), 0);
         this.parameters.totalCap = Math.round(totalBaseline * (periodRatio / 100));
       }
     } else if (this.parameters.periodCaps && this.parameters.periodCaps[this.currentPeriod]) {
@@ -1983,7 +2105,6 @@ class Simulation {
       this.parameters.totalCap = Math.round(this.parameters.totalCap * (1 + correctionRate));
     }
 
-    const activeFacilities = Object.values(this.facilities);
     const totalBaseline = activeFacilities.reduce((sum, f) => sum + f.baselineEmissions, 0);
     const freePool = Math.round(this.parameters.totalCap * (this.parameters.freeAllocationRate / 100));
 
@@ -1997,12 +2118,24 @@ class Simulation {
         newFreeAlloc = Math.round(freePool * share);
       }
 
+      // 1. Mandatory deduction of unpaid non-compliance deficit debt from prior period (Decree 06 / EU ETS Art 16)
+      if (fac.unpaidDeficitDebt > 0) {
+        const deficitDeducted = Math.min(newFreeAlloc, fac.unpaidDeficitDebt);
+        newFreeAlloc -= deficitDeducted;
+        fac.unpaidDeficitDebt -= deficitDeducted;
+        this.log('POLICY', `⚖️ ${fac.name} bị khấu trừ cưỡng chế ${deficitDeducted.toLocaleString()} tCO2e hạn ngạch nợ vi phạm chưa nộp từ kỳ trước vào đợt cấp phát Kỳ ${this.currentPeriod}`, {
+          deducted: deficitDeducted,
+          remainingDeficitDebt: fac.unpaidDeficitDebt
+        });
+      }
+
+      // 2. Repayment of legal borrowed allowances
       if (fac.borrowedUnits > 0) {
         const debt = fac.borrowedUnits;
         const deducted = Math.min(newFreeAlloc, debt);
         newFreeAlloc -= deducted;
         fac.borrowedUnits -= deducted;
-        this.log('POLICY', `${fac.name} repaid ${deducted} borrowed allowance debt from Period ${this.currentPeriod} (${this.getPeriodYears(this.currentPeriod)}) allocation`, {
+        this.log('POLICY', `${fac.name} repaid ${deducted.toLocaleString()} borrowed allowance debt from Period ${this.currentPeriod} (${this.getPeriodYears(this.currentPeriod)}) allocation`, {
           remainingDebt: fac.borrowedUnits
         });
       }
@@ -2016,7 +2149,7 @@ class Simulation {
         allowancesToSurrender: Math.min(fac.allowances, fac.actualEmissions),
         offsetsToSurrender: 0,
         borrowingRequested: 0,
-        deficit: 0,
+        deficit: Math.max(0, fac.actualEmissions - fac.allowances),
         penaltyPaid: 0
       };
     });
